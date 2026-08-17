@@ -1,0 +1,23 @@
+# Build artifacts. The documented build puts objects in a container-local
+# directory (/tmp/b) and copies only EBOOT.PBP + ioquake3.elf back here.
+build-out/*
+!build-out/.gitkeep
+
+# Local CMake build trees, if you configure one in-tree anyway
+/build/
+CMakeCache.txt
+CMakeFiles/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# AI assistant / editor cruft
+.claude/
+.cursor/
+.aider*
+CLAUDE.md
+ONBOARDING.md
