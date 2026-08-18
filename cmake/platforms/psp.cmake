@@ -162,6 +162,17 @@ if(PSP_STUTTER_TRACE)
     add_compile_definitions(PSP_FILE_TRACE=1 PSP_STUTTER_TRACE=1)
 endif()
 
+# Server browser ping-accuracy investigation: netdiag.log writes one
+# open/append/close Memory Stick file per network event (master response,
+# ping dispatch, getinfo reply). That per-line VFS cost turned out to
+# dominate the very latency it was measuring, so it must never be in a
+# normal build - OFF by default, matching PSP_FILE_TRACE's rationale exactly.
+option(PSP_NET_DIAG
+    "Log server browser network events to netdiag.log" OFF)
+if(PSP_NET_DIAG)
+    add_compile_definitions(PSP_NET_DIAG=1)
+endif()
+
 # Per-call renderer/cgame profiling is ON because queued PSP measurements
 # depend on its report.  A shipping EBOOT can be configured with
 # -DPSP_RENDER_PROFILE=OFF and then carries no per-call timer syscalls at all.

@@ -2540,13 +2540,15 @@ void CL_InitServerInfo( serverInfo_t *server, netadr_t *address ) {
 ===========================================================================
 CL_NetDiag_Log
 
-TEMP DIAGNOSTIC (server browser investigation). The in-game console has been
-unreliable to read on-device during this test, so mirror the same facts to a
-durable file instead - open/append/close per line so the file is readable
-even if the run ends abnormally before a clean shutdown. Written to the
-homepath as "netdiag.log". Remove once the Internet browser issue is found.
+Server browser network-event log, gated entirely behind PSP_NET_DIAG
+(OFF by default - see cmake/platforms/psp.cmake). Each call is a full
+open/append/close against the Memory Stick; measured on hardware to cost
+enough per line that it was dominating the very latency it was built to
+measure. A normal build must never pay this, hence the compile-time gate
+rather than a runtime cvar.
 ===========================================================================
 */
+#ifdef PSP_NET_DIAG
 static void QDECL CL_NetDiag_Log( const char *fmt, ... ) {
 	va_list		argptr;
 	char		msg[1024];
@@ -2562,6 +2564,7 @@ static void QDECL CL_NetDiag_Log( const char *fmt, ... ) {
 		FS_FCloseFile( f );
 	}
 }
+#endif
 
 /*
 ===================
@@ -2576,7 +2579,9 @@ void CL_ServersResponsePacket( const netadr_t* from, msg_t *msg, qboolean extend
 	byte*			buffend;
 
 	Com_Printf("CL_ServersResponsePacket from %s\n", NET_AdrToStringwPort(*from));
+#ifdef PSP_NET_DIAG
 	CL_NetDiag_Log( "ServersResponsePacket from %s", NET_AdrToStringwPort(*from) );
+#endif
 
 	if (cls.numglobalservers == -1) {
 		// state to detect lack of servers or lack of response
@@ -2664,8 +2669,6 @@ void CL_ServersResponsePacket( const netadr_t* from, msg_t *msg, qboolean extend
 			continue;
 
 		CL_InitServerInfo( server, &addresses[i] );
-		CL_NetDiag_Log( "  parsed addr[%d] = %s (type %d)", count,
-			NET_AdrToStringwPort( addresses[i] ), addresses[i].type );
 		// advance to next slot
 		count++;
 	}
@@ -2685,7 +2688,9 @@ void CL_ServersResponsePacket( const netadr_t* from, msg_t *msg, qboolean extend
 	total = count + cls.numGlobalServerAddresses;
 
 	Com_Printf("%d servers parsed (total %d)\n", numservers, total);
+#ifdef PSP_NET_DIAG
 	CL_NetDiag_Log( "%d servers parsed (total %d)", numservers, total );
+#endif
 }
 
 /*
@@ -3987,12 +3992,10 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 
 	infoString = MSG_ReadString( msg );
 
-	// TEMP DIAGNOSTIC (server browser investigation): unconditional so it
-	// shows on the in-game console with no psplink/com_developer needed, and
-	// mirrored to netdiag.log since the on-console readout has been unreliable.
-	// Remove once the "Internet browser shows zero rows" issue is resolved.
+#ifdef PSP_NET_DIAG
 	Com_Printf( "SVINFO: from %s: %s\n", NET_AdrToStringwPort( from ), infoString );
 	CL_NetDiag_Log( "SVINFO: from %s: %s", NET_AdrToStringwPort( from ), infoString );
+#endif
 
 	// if this isn't the correct gamename, ignore it
 	gamename = Info_ValueForKey( infoString, "gamename" );
@@ -4007,10 +4010,14 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 
 	if (gameMismatch)
 	{
+#ifdef PSP_NET_DIAG
 		Com_Printf( "SVINFO: REJECTED (gamename mismatch, got \"%s\" want \"%s\")\n",
 			gamename, com_gamename->string );
 		CL_NetDiag_Log( "SVINFO: REJECTED (gamename mismatch, got \"%s\" want \"%s\")",
 			gamename, com_gamename->string );
+#else
+		Com_DPrintf( "Game mismatch in info packet: %s\n", infoString );
+#endif
 		return;
 	}
 
@@ -4023,6 +4030,7 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 #endif
 	  )
 	{
+#ifdef PSP_NET_DIAG
 		Com_Printf( "SVINFO: REJECTED (protocol mismatch, got %d want %d or %d)\n",
 			prot, com_protocol->integer,
 #ifdef LEGACY_PROTOCOL
@@ -4039,6 +4047,9 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 			com_protocol->integer
 #endif
 			);
+#else
+		Com_DPrintf( "Different protocol info packet: %s\n", infoString );
+#endif
 		return;
 	}
 
@@ -4072,17 +4083,21 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 			Info_SetValueForKey( cl_pinglist[i].info, "nettype", va("%d", type) );
 			CL_SetServerInfoByAddress(from, infoString, cl_pinglist[i].time);
 
+#ifdef PSP_NET_DIAG
 			CL_NetDiag_Log( "SVINFO: MATCHED pinglist[%d], time=%dms", i, cl_pinglist[i].time );
+#endif
 			return;
 		}
 	}
 
-	// TEMP DIAGNOSTIC: reached only if the reply's source address did not
-	// match any pending cl_pinglist entry - i.e. we accepted the infoResponse
-	// but NET_CompareAdr(from, cl_pinglist[i].adr) never matched, so the
-	// server browser silently never learns about it either.
+#ifdef PSP_NET_DIAG
+	// Reached only if the reply's source address did not match any pending
+	// cl_pinglist entry - i.e. we accepted the infoResponse but
+	// NET_CompareAdr(from, cl_pinglist[i].adr) never matched, so the server
+	// browser silently never learns about it either.
 	CL_NetDiag_Log( "SVINFO: NO PINGLIST MATCH for %s (pingUpdateSource=%d)",
 		NET_AdrToStringwPort( from ), cls.pingUpdateSource );
+#endif
 
 	// if not just sent a local broadcast or pinging local servers
 	if (cls.pingUpdateSource != AS_LOCAL) {
@@ -4414,7 +4429,9 @@ void CL_GlobalServers_f( void ) {
 		to.port = BigShort(PORT_MASTER);
 
 	Com_Printf("Requesting servers from %s (%s)...\n", masteraddress, NET_AdrToStringwPort(to));
+#ifdef PSP_NET_DIAG
 	CL_NetDiag_Log( "GlobalServers_f: requesting from %s (%s)", masteraddress, NET_AdrToStringwPort(to) );
+#endif
 
 	cls.numglobalservers = -1;
 	cls.pingUpdateSource = AS_GLOBAL;
@@ -4665,12 +4682,16 @@ void CL_Ping_f( void ) {
 	Com_Memset( &to, 0, sizeof(netadr_t) );
 
 	if ( !NET_StringToAdr( server, &to, family ) ) {
+#ifdef PSP_NET_DIAG
 		CL_NetDiag_Log( "CL_Ping_f: NET_StringToAdr FAILED for \"%s\"", server );
+#endif
 		return;
 	}
 
+#ifdef PSP_NET_DIAG
 	CL_NetDiag_Log( "CL_Ping_f: sending getinfo to %s (parsed as %s, type %d)",
 		server, NET_AdrToStringwPort( to ), to.type );
+#endif
 
 	pingptr = CL_GetFreePing();
 

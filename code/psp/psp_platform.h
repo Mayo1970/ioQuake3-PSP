@@ -86,15 +86,22 @@ own MAX_GLOBALSERVERS (UI-side storage per master tab), which stayed at 128.
 That mismatch is a real bug: a master list past 128 entries gets silently
 clobbered into the UI's last slot instead of appearing.
 
-Back to Session 8's number (32) rather than guessing a new one (e.g. syncing
-the UI side up to 1024, ~0.86 MB more .bss across the 6 master tabs) without a
-boot log to weigh it against. 32 is small enough that neither side of the
-mismatch can ever be reached, so the bug class goes away without new .bss.
+A later pass dropped both sides to 32 (Session 8's proven-safe number) purely
+to make the two sides agree without guessing at unmeasured heap headroom.
 
-If a hardware run measures real heap headroom, this and ui_servers2.c's
-MAX_GLOBALSERVERS can both go back up together - keep them equal.
+Now raised to 128 - matching q3_ui/ui_servers2.c's own MAX_LISTBOXITEMS, i.e.
+the actual number of rows the scroll-list widget can ever show at once, so
+storage capacity equals display capacity exactly. Hand-computed cost: ~24 KB
+here (cls.globalServers + globalServerAddresses) plus ~87 KB in
+ui_servers2.c's g_globalserverlist[6][128], against the ~2 MB of heap
+headroom previously measured - negligible, unlike the ~1.15 MB the 1024 case
+would have cost.
+
+ui_servers2.c's MAX_GLOBALSERVERS is #define'd to this constant directly
+(not a second literal) specifically so the two can never drift apart again -
+see that file rather than hand-syncing a number here.
 */
-#define MAX_GLOBAL_SERVERS        32
+#define MAX_GLOBAL_SERVERS        128
 
 /*
 cl_serverStatusList[MAX_SERVERSTATUSREQUESTS] (client/cl_main.c:152) is 8244

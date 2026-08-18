@@ -60,6 +60,9 @@ associate at all.
 #include <pspnet_apctl.h>
 #include <pspnet_resolver.h>
 #include <pspwlan.h>
+#ifdef PSP_NET_DIAG
+#include <psppower.h>
+#endif
 
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -712,6 +715,36 @@ static qboolean NET_GetPacket( netadr_t *net_from, msg_t *net_message )
 
 /*
 ===========================================================================
+NET_PSP_DiagLog
+
+Server browser network-event log, gated entirely behind PSP_NET_DIAG
+(OFF by default - see cmake/platforms/psp.cmake). Measured on hardware:
+this open/append/close-per-line cost was dominating the very latency it
+was built to measure, so it must never run in a normal build.
+===========================================================================
+*/
+#ifdef PSP_NET_DIAG
+static void QDECL NET_PSP_DiagLog( const char *fmt, ... )
+{
+	va_list		argptr;
+	char		msg[256];
+	fileHandle_t f;
+
+	va_start( argptr, fmt );
+	Q_vsnprintf( msg, sizeof( msg ), fmt, argptr );
+	va_end( argptr );
+
+	FS_FOpenFileByMode( "netdiag.log", &f, FS_APPEND );
+	if( f )
+	{
+		FS_Printf( f, "%s\n", msg );
+		FS_FCloseFile( f );
+	}
+}
+#endif
+
+/*
+===========================================================================
 NET_Event
 
 Drain the socket and dispatch. Same body as net_ip.c:1626, minus the fd_set
@@ -723,6 +756,11 @@ static void NET_Event( void )
 	byte		bufData[ MAX_MSGLEN + 1 ];
 	netadr_t	from;
 	msg_t		netmsg;
+#ifdef PSP_NET_DIAG
+	int			drained = 0;
+
+	NET_PSP_DiagLog( "NET_Event enter at %dms", Sys_Milliseconds() );
+#endif
 
 	while( 1 )
 	{
@@ -731,6 +769,10 @@ static void NET_Event( void )
 
 		if( !NET_GetPacket( &from, &netmsg ) )
 			break;
+
+#ifdef PSP_NET_DIAG
+		drained++;
+#endif
 
 		if( net_dropsim && net_dropsim->value > 0.0f && net_dropsim->value <= 100.0f )
 		{
@@ -743,6 +785,10 @@ static void NET_Event( void )
 		else
 			CL_PacketEvent( from, &netmsg );
 	}
+
+#ifdef PSP_NET_DIAG
+	NET_PSP_DiagLog( "NET_Event drained %d packet(s), exit at %dms", drained, Sys_Milliseconds() );
+#endif
 }
 
 /*
@@ -771,6 +817,24 @@ void NET_Sleep( int msec )
 
 	if( msec < 0 )
 		msec = 0;
+
+#ifdef PSP_NET_DIAG
+	/* Throttled to at most 1 line/200ms so it does not itself dominate frame
+	   time. A growing gap between consecutive timestamps here directly
+	   measures how often Com_Frame's pacing loop is actually reaching
+	   NET_Sleep - i.e. the real frame cadence - independent of whether there
+	   was anything to read. */
+	{
+		static unsigned int lastSleepDiagMs = 0;
+		unsigned int nowMs = (unsigned int)Sys_Milliseconds();
+		if( nowMs - lastSleepDiagMs >= 200 )
+		{
+			NET_PSP_DiagLog( "NET_Sleep tick at %ums (msec=%d, delta=%ums)",
+				nowMs, msec, nowMs - lastSleepDiagMs );
+			lastSleepDiagMs = nowMs;
+		}
+	}
+#endif
 
 	/* Advance association without blocking the first frame/menu. */
 	NET_PSP_AssociationPump();
@@ -1398,6 +1462,16 @@ error 8002013C (that was -lpspkernel).
 void NET_Init( void )
 {
 	int rc;
+
+#ifdef PSP_NET_DIAG
+	/* Direct answer to "is the manual overclock actually in effect right
+	   now". sys_psp.c's Sys_PlatformInit already reads this back for exactly
+	   the reason given there - a refused clock request silently runs the
+	   whole session at 222 MHz and "reads exactly like slow code" - but that
+	   trace only reaches the normal console. Mirrored to netdiag.log too. */
+	NET_PSP_DiagLog( "CPU clock: %d MHz, bus clock: %d MHz",
+		scePowerGetCpuClockFrequency(), scePowerGetBusClockFrequency() );
+#endif
 
 	Cmd_AddCommand( "net_restart", NET_Restart_f );
 
