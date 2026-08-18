@@ -135,10 +135,32 @@ The PSP network socket can remain bound while the client is in the menu,
 playing a local game, or playing a demo. Those states must not pay the
 network-specific vblank rendezvous. A loopback address identifies the local
 single-player/listen-server path; LAN and internet servers remain enabled.
+
+REGRESSION NOTE (server browser investigation): this originally checked only
+clc.state, which meant it returned 0 for the entire server browser flow -
+clc.state never leaves CA_DISCONNECTED while browsing, since nothing gets
+connected to. That is precisely the case psp_net.c's own header comment
+warns about ("the server browser's getserversResponse burst and its 32
+concurrent getinfo replies are the worst receive burst the port ever sees"),
+and precisely what the original pre-this-function code covered by gating on
+the socket alone. Measured on hardware: with the state-only check, real
+getinfo replies from live internet servers were landing 3-3.5s after being
+sent (see netdiag.log), well past cl_maxPing, because the net threads' 0x18
+priority fix alone was not enough to get them serviced promptly without the
+vblank rendezvous - confirming the exact risk the comment predicted. The
+CL_GetPingQueueCount()/numglobalservers checks below restore that coverage
+without paying the rendezvous for idle menus, local play, or demo playback.
 =======================
 */
 int CL_PSP_IsRemoteSession( void )
 {
+	// Actively waiting on a master server list, or actively pinging servers
+	// for the browser - see the regression note above.
+	if ( cls.numglobalservers == -1 || CL_GetPingQueueCount() > 0 )
+	{
+		return 1;
+	}
+
 	if ( clc.demoplaying ||
 		 clc.state < CA_CONNECTING ||
 		 clc.state >= CA_CINEMATIC )
@@ -2515,6 +2537,33 @@ void CL_InitServerInfo( serverInfo_t *server, netadr_t *address ) {
 #define MAX_SERVERSPERPACKET	256
 
 /*
+===========================================================================
+CL_NetDiag_Log
+
+TEMP DIAGNOSTIC (server browser investigation). The in-game console has been
+unreliable to read on-device during this test, so mirror the same facts to a
+durable file instead - open/append/close per line so the file is readable
+even if the run ends abnormally before a clean shutdown. Written to the
+homepath as "netdiag.log". Remove once the Internet browser issue is found.
+===========================================================================
+*/
+static void QDECL CL_NetDiag_Log( const char *fmt, ... ) {
+	va_list		argptr;
+	char		msg[1024];
+	fileHandle_t f;
+
+	va_start( argptr, fmt );
+	Q_vsnprintf( msg, sizeof( msg ), fmt, argptr );
+	va_end( argptr );
+
+	FS_FOpenFileByMode( "netdiag.log", &f, FS_APPEND );
+	if ( f ) {
+		FS_Printf( f, "%s\n", msg );
+		FS_FCloseFile( f );
+	}
+}
+
+/*
 ===================
 CL_ServersResponsePacket
 ===================
@@ -2525,8 +2574,9 @@ void CL_ServersResponsePacket( const netadr_t* from, msg_t *msg, qboolean extend
 	int				numservers;
 	byte*			buffptr;
 	byte*			buffend;
-	
+
 	Com_Printf("CL_ServersResponsePacket from %s\n", NET_AdrToStringwPort(*from));
+	CL_NetDiag_Log( "ServersResponsePacket from %s", NET_AdrToStringwPort(*from) );
 
 	if (cls.numglobalservers == -1) {
 		// state to detect lack of servers or lack of response
@@ -2614,6 +2664,8 @@ void CL_ServersResponsePacket( const netadr_t* from, msg_t *msg, qboolean extend
 			continue;
 
 		CL_InitServerInfo( server, &addresses[i] );
+		CL_NetDiag_Log( "  parsed addr[%d] = %s (type %d)", count,
+			NET_AdrToStringwPort( addresses[i] ), addresses[i].type );
 		// advance to next slot
 		count++;
 	}
@@ -2633,6 +2685,7 @@ void CL_ServersResponsePacket( const netadr_t* from, msg_t *msg, qboolean extend
 	total = count + cls.numGlobalServerAddresses;
 
 	Com_Printf("%d servers parsed (total %d)\n", numservers, total);
+	CL_NetDiag_Log( "%d servers parsed (total %d)", numservers, total );
 }
 
 /*
@@ -3689,7 +3742,15 @@ void CL_Init( void ) {
 
 	cl_motdString = Cvar_Get( "cl_motdString", "", CVAR_ROM );
 
-	Cvar_Get( "cl_maxPing", "800", CVAR_ARCHIVE );
+	// Upstream's 800ms assumes LAN-grade latency. netdiag.log from a real
+	// Internet server browse on hardware showed every accepted getinfo reply
+	// landing at 3029-3522ms - so 800ms silently clears the ping-tracking slot
+	// (ArenaServers_DoRefresh -> trap_LAN_ClearPing) long before any real
+	// server on the internet master list can answer, and CL_ServerInfoPacket
+	// then has nothing to match the reply against ("NO PINGLIST MATCH"). This
+	// is user-configurable (CVAR_ARCHIVE) - raising the default doesn't
+	// prevent someone from tightening it back up for LAN-only use.
+	Cvar_Get( "cl_maxPing", "6000", CVAR_ARCHIVE );
 
 	cl_lanForcePackets = Cvar_Get ("cl_lanForcePackets", "1", CVAR_ARCHIVE);
 
@@ -3926,6 +3987,13 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 
 	infoString = MSG_ReadString( msg );
 
+	// TEMP DIAGNOSTIC (server browser investigation): unconditional so it
+	// shows on the in-game console with no psplink/com_developer needed, and
+	// mirrored to netdiag.log since the on-console readout has been unreliable.
+	// Remove once the "Internet browser shows zero rows" issue is resolved.
+	Com_Printf( "SVINFO: from %s: %s\n", NET_AdrToStringwPort( from ), infoString );
+	CL_NetDiag_Log( "SVINFO: from %s: %s", NET_AdrToStringwPort( from ), infoString );
+
 	// if this isn't the correct gamename, ignore it
 	gamename = Info_ValueForKey( infoString, "gamename" );
 
@@ -3939,7 +4007,10 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 
 	if (gameMismatch)
 	{
-		Com_DPrintf( "Game mismatch in info packet: %s\n", infoString );
+		Com_Printf( "SVINFO: REJECTED (gamename mismatch, got \"%s\" want \"%s\")\n",
+			gamename, com_gamename->string );
+		CL_NetDiag_Log( "SVINFO: REJECTED (gamename mismatch, got \"%s\" want \"%s\")",
+			gamename, com_gamename->string );
 		return;
 	}
 
@@ -3952,7 +4023,22 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 #endif
 	  )
 	{
-		Com_DPrintf( "Different protocol info packet: %s\n", infoString );
+		Com_Printf( "SVINFO: REJECTED (protocol mismatch, got %d want %d or %d)\n",
+			prot, com_protocol->integer,
+#ifdef LEGACY_PROTOCOL
+			com_legacyprotocol->integer
+#else
+			com_protocol->integer
+#endif
+			);
+		CL_NetDiag_Log( "SVINFO: REJECTED (protocol mismatch, got %d want %d or %d)",
+			prot, com_protocol->integer,
+#ifdef LEGACY_PROTOCOL
+			com_legacyprotocol->integer
+#else
+			com_protocol->integer
+#endif
+			);
 		return;
 	}
 
@@ -3986,9 +4072,17 @@ void CL_ServerInfoPacket( netadr_t from, msg_t *msg ) {
 			Info_SetValueForKey( cl_pinglist[i].info, "nettype", va("%d", type) );
 			CL_SetServerInfoByAddress(from, infoString, cl_pinglist[i].time);
 
+			CL_NetDiag_Log( "SVINFO: MATCHED pinglist[%d], time=%dms", i, cl_pinglist[i].time );
 			return;
 		}
 	}
+
+	// TEMP DIAGNOSTIC: reached only if the reply's source address did not
+	// match any pending cl_pinglist entry - i.e. we accepted the infoResponse
+	// but NET_CompareAdr(from, cl_pinglist[i].adr) never matched, so the
+	// server browser silently never learns about it either.
+	CL_NetDiag_Log( "SVINFO: NO PINGLIST MATCH for %s (pingUpdateSource=%d)",
+		NET_AdrToStringwPort( from ), cls.pingUpdateSource );
 
 	// if not just sent a local broadcast or pinging local servers
 	if (cls.pingUpdateSource != AS_LOCAL) {
@@ -4320,6 +4414,7 @@ void CL_GlobalServers_f( void ) {
 		to.port = BigShort(PORT_MASTER);
 
 	Com_Printf("Requesting servers from %s (%s)...\n", masteraddress, NET_AdrToStringwPort(to));
+	CL_NetDiag_Log( "GlobalServers_f: requesting from %s (%s)", masteraddress, NET_AdrToStringwPort(to) );
 
 	cls.numglobalservers = -1;
 	cls.pingUpdateSource = AS_GLOBAL;
@@ -4462,10 +4557,31 @@ CL_GetFreePing
 ping_t* CL_GetFreePing( void )
 {
 	ping_t*	pingptr;
-	ping_t*	best;	
+	ping_t*	best;
 	int		oldest;
 	int		i;
 	int		time;
+	int		protectMs;
+
+	/*
+	 REGRESSION NOTE (server browser investigation): this used to compare
+	 against a hardcoded 500, completely decoupled from cl_maxPing. On a
+	 desktop, dispatching 32 "ping" commands back to back takes microseconds,
+	 so 500ms of slot protection was never actually load-bearing. On this
+	 port, issuing all 32 through Cbuf/Cmd + NET_StringToAdr + Sys_SendPacket
+	 takes long enough that by the time the later pings in a 32-wide browser
+	 burst are dispatched, the earliest slots had already crossed 500ms and
+	 got silently reused for the new targets - wiping their tracking before
+	 their real ~3s WAN reply (see netdiag.log) ever arrived, so it showed up
+	 later as "NO PINGLIST MATCH" in CL_ServerInfoPacket. Raising cl_maxPing
+	 alone did nothing because this 500 was never derived from it. Floor of
+	 500 keeps prior behavior for anyone who sets cl_maxPing very low.
+	*/
+	protectMs = Cvar_VariableIntegerValue( "cl_maxPing" );
+	if ( protectMs < 500 )
+	{
+		protectMs = 500;
+	}
 
 	pingptr = cl_pinglist;
 	for (i=0; i<MAX_PINGREQUESTS; i++, pingptr++ )
@@ -4475,7 +4591,7 @@ ping_t* CL_GetFreePing( void )
 		{
 			if (!pingptr->time)
 			{
-				if (Sys_Milliseconds() - pingptr->start < 500)
+				if (Sys_Milliseconds() - pingptr->start < protectMs)
 				{
 					// still waiting for response
 					continue;
@@ -4483,7 +4599,9 @@ ping_t* CL_GetFreePing( void )
 			}
 			else if (pingptr->time < 500)
 			{
-				// results have not been queried
+				// results have not been queried - this branch checks the
+				// MAGNITUDE of the already-measured RTT as a heuristic, not
+				// elapsed wait time, so it stays independent of cl_maxPing.
 				continue;
 			}
 		}
@@ -4547,8 +4665,12 @@ void CL_Ping_f( void ) {
 	Com_Memset( &to, 0, sizeof(netadr_t) );
 
 	if ( !NET_StringToAdr( server, &to, family ) ) {
+		CL_NetDiag_Log( "CL_Ping_f: NET_StringToAdr FAILED for \"%s\"", server );
 		return;
 	}
+
+	CL_NetDiag_Log( "CL_Ping_f: sending getinfo to %s (parsed as %s, type %d)",
+		server, NET_AdrToStringwPort( to ), to.type );
 
 	pingptr = CL_GetFreePing();
 

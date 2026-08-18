@@ -32,7 +32,13 @@ MULTIPLAYER MENU (SERVER BROWSER)
 #include "ui_local.h"
 
 
-#define MAX_GLOBALSERVERS		128
+// Must equal MAX_GLOBAL_SERVERS (code/psp/psp_platform.h) - that's the
+// client's own storage cap for cls.globalServers. A smaller number here
+// silently clobbers every discovered server past this many into the last
+// slot instead of showing it; a larger number here is dead space since the
+// client can never report that many. Session 8/9/10 history in
+// psp_platform.h explains why this is 32 and not something bigger.
+#define MAX_GLOBALSERVERS		32
 #define MAX_PINGREQUESTS		32
 #define MAX_ADDRESSLENGTH		64
 #define MAX_HOSTNAMELENGTH		22

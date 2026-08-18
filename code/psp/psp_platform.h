@@ -79,16 +79,22 @@ cls.globalServerAddresses (client/client.h:327,330) are ~1.0 MB of the 1.1 MB
 clientStatic_t at upstream's 4096, i.e. ~284 bytes per row.
 
 Session 8 cut this to 32 because psp_net.c was loopback-only and the browser
-could not return a single row. Session 9 made it able to, so it comes back -
-but not to 4096. That is ~1.15 MB of .bss against the ~2 MB of heap headroom
-the Session 8 hardware run actually measured, and nobody scrolls a
-thousand-row list on a 480x272 screen. 1024 costs ~0.29 MB.
+could not return a single row. Session 9 raised it to 1024 once networking
+worked - but that number was never actually load-bearing on a hardware
+measurement, and it silently drifted out of sync with q3_ui/ui_servers2.c's
+own MAX_GLOBALSERVERS (UI-side storage per master tab), which stayed at 128.
+That mismatch is a real bug: a master list past 128 entries gets silently
+clobbered into the UI's last slot instead of appearing.
 
-If the boot log's outside-heap figure comes back tight, lower PSP_HEAP_KB
-(cmake/platforms/psp.cmake) rather than putting this back down - the caps are
-a browser capability, the heap number is a knob.
+Back to Session 8's number (32) rather than guessing a new one (e.g. syncing
+the UI side up to 1024, ~0.86 MB more .bss across the 6 master tabs) without a
+boot log to weigh it against. 32 is small enough that neither side of the
+mismatch can ever be reached, so the bug class goes away without new .bss.
+
+If a hardware run measures real heap headroom, this and ui_servers2.c's
+MAX_GLOBALSERVERS can both go back up together - keep them equal.
 */
-#define MAX_GLOBAL_SERVERS        1024
+#define MAX_GLOBAL_SERVERS        32
 
 /*
 cl_serverStatusList[MAX_SERVERSTATUSREQUESTS] (client/cl_main.c:152) is 8244
