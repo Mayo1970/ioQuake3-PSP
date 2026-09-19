@@ -456,25 +456,8 @@ list(APPEND COMMON_LIBRARIES
 # psp-prxgen/mksfoex/pack-pbp invocations. See cmake/post_configure.cmake for
 # the POST_CONFIGURE_FUNCTIONS dispatcher and its packaging pattern.
 #
-# MEMSIZE 2, NOT 1. The SDK's own build.mak:43-55 is explicit:
-#
-#   # CFW versions after M33 3.90 guard against expanding the
-#   # user memory partition on PSP-1000, making MEMSIZE obsolete.
-#   # It is now an opt-out policy with PSP_LARGE_MEMORY=0
-#   ifeq ($(shell test $(PSP_FW_VERSION) -gt 390; echo $$?),0)
-#   EXPAND_MEMORY = 2
-#   ifeq ($(PSP_LARGE_MEMORY),1)
-#   $(warning "PSP_LARGE_MEMORY" flag is not necessary targeting firmware
-#             versions above 3.90)
-#
-# We build with _PSP_FW_VERSION=600, so 2 is the correct modern value; 1 is
-# the legacy 3.x path the SDK warns against. 2 is also CreatePBP.cmake's own
-# default and what DaedalusX64 ships (Source/CMakeLists.txt:320-327 passes no
-# MEMSIZE at all). Expanded memory still happens - via 2, not 1.
-#
-# Q3PORT.md DECISION-004 conflated two different mechanisms: the mirror's
-# PSP_LARGE_MEMORY=1 is a build.mak variable from the 3.x era, not the
-# PARAM.SFO MEMSIZE key. Setting MEMSIZE 1 here was that error propagated.
+# MEMSIZE 1 = expanded 52 MB user partition (SDK default). ARK 5 treats 2 as
+# Vita-style limited memory: 24 MB partition, the 35 MB heap fails, boot dies.
 # ---------------------------------------------------------------------------
 list(APPEND POST_CONFIGURE_FUNCTIONS psp_package)
 
@@ -496,6 +479,6 @@ function(psp_package)
         TITLE "ioquake3"
         ICON_PATH "${CMAKE_SOURCE_DIR}/graphics/q3/ICON0.png"
         BACKGROUND_PATH "${CMAKE_SOURCE_DIR}/graphics/q3/PIC1.png"
-        MEMSIZE 2
+        MEMSIZE 1
     )
 endfunction()
