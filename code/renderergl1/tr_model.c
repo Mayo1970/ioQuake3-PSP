@@ -61,6 +61,11 @@ qhandle_t R_RegisterMD3(const char *name, model_t *mod)
 
 	for (lod = MD3_MAX_LODS - 1 ; lod >= 0 ; lod--)
 	{
+#ifdef __PSP__
+		// One LOD only, stored as LOD 0: PSP_MD3_LOD, else the next better one that exists.
+		if ( lod > PSP_MD3_LOD || numLoaded )
+			continue;
+#endif
 		if(lod)
 			Com_sprintf(namebuf, sizeof(namebuf), "%s_%d.%s", filename, lod, fext);
 		else
@@ -72,7 +77,11 @@ qhandle_t R_RegisterMD3(const char *name, model_t *mod)
 		
 		ident = LittleLong(* (unsigned *) buf.u);
 		if (ident == MD3_IDENT)
+#ifdef __PSP__
+			loaded = R_LoadMD3(mod, 0, buf.u, name);
+#else
 			loaded = R_LoadMD3(mod, lod, buf.u, name);
+#endif
 		else
 			ri.Printf(PRINT_WARNING,"R_RegisterMD3: unknown fileid for %s\n", name);
 		

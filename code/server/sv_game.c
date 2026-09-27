@@ -605,7 +605,17 @@ intptr_t SV_GameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case BOTLIB_AI_LOAD_CHARACTER:
+#ifdef __PSP__
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+			int result = botlib_export->ai.BotLoadCharacter( VMA(1), VMF(2) );
+
+			Sys_PSP_CountEnd( PSP_COUNT_BOT_CHAR, countStart, 0 );
+			return result;
+		}
+#else
 		return botlib_export->ai.BotLoadCharacter( VMA(1), VMF(2) );
+#endif
 	case BOTLIB_AI_FREE_CHARACTER:
 		botlib_export->ai.BotFreeCharacter( args[1] );
 		return 0;
@@ -665,7 +675,17 @@ intptr_t SV_GameSystemCalls( intptr_t *args ) {
 		botlib_export->ai.BotReplaceSynonyms( VMA(1), args[2] );
 		return 0;
 	case BOTLIB_AI_LOAD_CHAT_FILE:
+#ifdef __PSP__
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+			int result = botlib_export->ai.BotLoadChatFile( args[1], VMA(2), VMA(3) );
+
+			Sys_PSP_CountEnd( PSP_COUNT_BOT_CHAT, countStart, 0 );
+			return result;
+		}
+#else
 		return botlib_export->ai.BotLoadChatFile( args[1], VMA(2), VMA(3) );
+#endif
 	case BOTLIB_AI_SET_CHAT_GENDER:
 		botlib_export->ai.BotSetChatGender( args[1], args[2] );
 		return 0;
@@ -730,7 +750,17 @@ intptr_t SV_GameSystemCalls( intptr_t *args ) {
 		botlib_export->ai.BotUpdateEntityItems();
 		return 0;
 	case BOTLIB_AI_LOAD_ITEM_WEIGHTS:
+#ifdef __PSP__
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+			int result = botlib_export->ai.BotLoadItemWeights( args[1], VMA(2) );
+
+			Sys_PSP_CountEnd( PSP_COUNT_BOT_WEIGHT, countStart, 0 );
+			return result;
+		}
+#else
 		return botlib_export->ai.BotLoadItemWeights( args[1], VMA(2) );
+#endif
 	case BOTLIB_AI_FREE_ITEM_WEIGHTS:
 		botlib_export->ai.BotFreeItemWeights( args[1] );
 		return 0;
@@ -787,7 +817,17 @@ intptr_t SV_GameSystemCalls( intptr_t *args ) {
 		botlib_export->ai.BotGetWeaponInfo( args[1], args[2], VMA(3) );
 		return 0;
 	case BOTLIB_AI_LOAD_WEAPON_WEIGHTS:
+#ifdef __PSP__
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+			int result = botlib_export->ai.BotLoadWeaponWeights( args[1], VMA(2) );
+
+			Sys_PSP_CountEnd( PSP_COUNT_BOT_WEIGHT, countStart, 0 );
+			return result;
+		}
+#else
 		return botlib_export->ai.BotLoadWeaponWeights( args[1], VMA(2) );
+#endif
 	case BOTLIB_AI_ALLOC_WEAPON_STATE:
 		return botlib_export->ai.BotAllocWeaponState();
 	case BOTLIB_AI_FREE_WEAPON_STATE:

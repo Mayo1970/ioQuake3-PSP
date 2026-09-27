@@ -21,6 +21,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 // tr_image.c
 #include "tr_local.h"
+#ifdef __PSP__
+#include "../psp/psp_tex.h"
+#endif
 
 static byte			 s_intensitytable[256];
 static unsigned char s_gammatable[256];
@@ -738,6 +741,12 @@ static void Upload32( unsigned *data,
 		}
 	}
 
+#ifdef __PSP__
+	if ( !lightMap && allowCompression && !r_greyscale->integer ) {
+		internalFormat = PSP_TexChooseFormat( internalFormat, samples == 4, scaled_width, scaled_height, picmip, mipmap );
+	}
+#endif
+
 	// copy or resample data as appropriate for first MIP level
 	if ( ( scaled_width == width ) && 
 		( scaled_height == height ) ) {
@@ -1029,6 +1038,9 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 	int		width, height;
 	byte	*pic;
 	long	hash;
+#ifdef __PSP__
+	unsigned int	countStart;
+#endif
 
 	if (!name) {
 		return NULL;
@@ -1054,12 +1066,32 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 	//
 	// load the pic from disk
 	//
+#ifdef __PSP__
+	// JPEGs decode at 1/2^r_picmip, so the full-size RGBA buffer never exists (Xbox port).
+	r_pspJpegShift = ( flags & IMGFLAG_PICMIP ) && r_picmip->integer <= 3 ? r_picmip->integer : 0;
+	r_pspJpegScaled = qfalse;
+	countStart = Sys_PSP_CountBegin();
+#endif
 	R_LoadImage( name, &pic, &width, &height );
+#ifdef __PSP__
+	Sys_PSP_CountEnd( PSP_COUNT_IMAGE_LOAD, countStart, pic ? 1 : 0 );
+	r_pspJpegShift = 0;
+	// Picmip is already applied, so Upload32 must not halve the image again.
+	if ( r_pspJpegScaled ) {
+		flags &= ~IMGFLAG_PICMIP;
+	}
+#endif
 	if ( pic == NULL ) {
 		return NULL;
 	}
 
+#ifdef __PSP__
+	countStart = Sys_PSP_CountBegin();
 	image = R_CreateImage( ( char * ) name, pic, width, height, type, flags, 0 );
+	Sys_PSP_CountEnd( PSP_COUNT_IMAGE_CREATE, countStart, 0 );
+#else
+	image = R_CreateImage( ( char * ) name, pic, width, height, type, flags, 0 );
+#endif
 	ri.Free( pic );
 	return image;
 }

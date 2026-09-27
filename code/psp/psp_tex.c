@@ -1,33 +1,10 @@
-/*
-===========================================================================
-PSP port - code/psp/psp_tex.c
-
-Session 6. Texture objects: allocation, RGBA8888 -> 16-bit conversion,
-swizzling, cache discipline, and the GU state a bind has to emit.
-
-See psp_tex.h for the scope decisions this session was planned against
-(main RAM only, 16-bit formats only, no CLUT).
-
-Three GE facts shape everything below and are worth stating once:
-
-  1. There is no "upload". sceGuTexImage points the GE at memory and the
-     GE DMA-reads it from there for the life of the binding. So the
-     conversion result has to stay allocated, and the D-cache has to be
-     written back after the CPU fills it - unlike display-list memory,
-     which sceGuStart already maps through the uncached mirror.
-  2. sceGuTexMode's swizzle flag is per TEXTURE, not per level. Either
-     every level is swizzled or none is, which is what caps the mip chain
-     below.
-  3. tbw (texture buffer width) is block-aligned - 16 bytes, i.e. 8 pixels
-     at 16 bpp - and is a separate number from the visible width, exactly
-     like the framebuffer's 512-vs-480 stride. Levels narrower than 8
-     pixels get padded rather than special-cased.
-===========================================================================
-*/
+// Texture objects: allocation, RGBA8888 -> 16-bit or DXT conversion, swizzling, cache, GU state.
+// The GE samples straight from this memory, so it stays allocated and must be written back.
 
 #include "psp_tex.h"
 #include "psp_gu.h"
 #include "psp_pool.h"
+#include "psp_dxt.h"
 
 #include <malloc.h>
 #include <string.h>
@@ -35,25 +12,13 @@ Three GE facts shape everything below and are worth stating once:
 #include <psputils.h>
 #include <vram.h>
 
-/*
- Where a mip level's memory came from. Session 11d: levels no longer come
- from the newlib heap by default, because that heap was measured with 3.3 MB
- free and a largest block under 1 KB while 128 KB uploads failed (psp_pool.h).
-
- Order of preference, and the reason for it:
-
-   POOL   the 4 MB volatile partition. Textures are its only customer, so
-          its fragmentation is the texture set's own, and it is memory the
-          port was otherwise not using.
-   VRAM   whatever libpspvram has left after the three framebuffers. Small
-          - ~1 MB - and the GE samples it faster, though Session 11c
-          measured geSync at ~0 ms, so this is memory relief and not speed.
-   HEAP   the old path, kept as the fallback so a failed volatile lock
-          degrades to Session 11c behaviour instead of a black screen.
-*/
+// Where a level came from: the volatile pool first, then VRAM left after the framebuffers,
+// then the heap, which also keeps a failed volatile lock from becoming a black screen.
 #define PSP_TEXMEM_HEAP	0
 #define PSP_TEXMEM_POOL	1
 #define PSP_TEXMEM_VRAM	2
+
+#define PSP_TEX_IS_DXT( psm )	( (psm) == GU_PSM_DXT1 || (psm) == GU_PSM_DXT5 )
 
 typedef struct {
 	void		*level[PSP_TEX_MAX_LEVELS];
@@ -63,7 +28,7 @@ typedef struct {
 	unsigned char	where[PSP_TEX_MAX_LEVELS];	// PSP_TEXMEM_*
 	int		bytes;				// total allocated for this texture
 
-	unsigned char	psm;				// GU_PSM_5650 or GU_PSM_4444
+	unsigned char	psm;				// GU_PSM_5650, 4444, DXT1 or DXT5
 	unsigned char	maxLevel;			// highest level actually stored, 0..7
 	unsigned char	swizzled;
 	unsigned char	used;
@@ -81,14 +46,7 @@ static int		pspTexSwizzledCount;
 
 static int		pspTexBytesBySource[ 3 ];	// indexed by PSP_TEXMEM_*
 
-/*
-===============
-PSP_TexAllocLevel
-
-Pool, then VRAM, then heap - see the PSP_TEXMEM_* note above. Returns the
-pointer and reports which pool it came from, because free() has to match.
-===============
-*/
+// Returns which pool the level came from, because the free has to match it.
 static void *PSP_TexAllocLevel( int bytes, unsigned char *where )
 {
 	void	*p;
@@ -100,9 +58,7 @@ static void *PSP_TexAllocLevel( int bytes, unsigned char *where )
 		return p;
 	}
 
-	// vramalloc already returns an absolute pointer, which is what the CPU
-	// writes through and what sceGuTexImage wants (vram.h). No vrelptr here -
-	// that conversion belongs to the framebuffer calls in psp_glimp.c.
+	// vramalloc returns the absolute pointer that both the CPU and sceGuTexImage use.
 	p = vramalloc( (size_t)bytes );
 	if( p )
 	{
@@ -126,11 +82,15 @@ static void PSP_TexFreeLevel( void *p, unsigned char where )
 	}
 }
 
-/*
-=================================================================
-Slot management
-=================================================================
-*/
+// DXT levels keep the height a multiple of 4, so the block sizes divide exactly.
+static int PSP_TexLevelBytes( int psm, int tbw, int height )
+{
+	if( psm == GU_PSM_DXT1 )
+		return tbw * height / 2;
+	if( psm == GU_PSM_DXT5 )
+		return tbw * height;
+	return tbw * height * 2;
+}
 
 static pspTexture_t *PSP_TexSlot( GLuint name )
 {
@@ -140,13 +100,7 @@ static pspTexture_t *PSP_TexSlot( GLuint name )
 	return &pspTextures[ name - 1 ];
 }
 
-/*
-===============
-PSP_TexGenName
-
-qglGenTextures. 0 is reserved by GL and must never be issued.
-===============
-*/
+// qglGenTextures. 0 is reserved by GL and must never be issued.
 GLuint PSP_TexGenName( void )
 {
 	int	i;
@@ -185,7 +139,7 @@ static void PSP_TexFreeLevels( pspTexture_t *tex )
 	{
 		if( tex->level[ i ] )
 		{
-			int	levelBytes = tex->tbw[ i ] * tex->h[ i ] * 2;
+			int	levelBytes = PSP_TexLevelBytes( tex->psm, tex->tbw[ i ], tex->h[ i ] );
 
 			PSP_TexFreeLevel( tex->level[ i ], tex->where[ i ] );
 			pspTexBytesBySource[ tex->where[ i ] ] -= levelBytes;
@@ -200,11 +154,6 @@ static void PSP_TexFreeLevels( pspTexture_t *tex )
 	tex->maxLevel = 0;
 }
 
-/*
-===============
-PSP_TexDelete
-===============
-*/
 void PSP_TexDelete( GLuint name )
 {
 	pspTexture_t	*tex = PSP_TexSlot( name );
@@ -224,31 +173,12 @@ void PSP_TexDelete( GLuint name )
 		pspCurrentTexture = 0;
 }
 
-/*
-=================================================================
-Conversion
-
-GL hands us GL_RGBA / GL_UNSIGNED_BYTE - r,g,b,a in ascending memory
-order. The GE's 16-bit texture formats put red in the LOW bits, so both
-conversions read like the little-endian bit layouts they are and neither
-needs a byte swap (the Allegrex is little-endian; unlike the Wii and PS3
-ports there is no endian work anywhere in this file).
-=================================================================
-*/
-
+// GL hands over r,g,b,a bytes; the GE 16-bit formats put red in the low bits, so no swap.
 #define PSP_CONV_5650( p )	( (unsigned short)( ( (p)[0] >> 3 ) | ( ( (p)[1] >> 2 ) << 5 ) | ( ( (p)[2] >> 3 ) << 11 ) ) )
 #define PSP_CONV_4444( p )	( (unsigned short)( ( (p)[0] >> 4 ) | ( ( (p)[1] >> 4 ) << 4 ) | ( ( (p)[2] >> 4 ) << 8 ) | ( ( (p)[3] >> 4 ) << 12 ) ) )
 
-/*
- Destination index of pixel (x, y) within a level.
-
- Swizzled memory is 16-byte by 8-row blocks laid out block-row major -
- the same tiling Quake3PSP-mirror/renderer/tr_image.cpp:349 blits with
- word copies. That fast path only works for a whole level at a time;
- doing the index arithmetic per pixel instead means one code path serves
- both a full qglTexImage2D and a partial qglTexSubImage2D (the cinematic
- update at tr_backend.c:803), and this only ever runs at load time.
-*/
+// Swizzled levels are 16-byte x 8-row blocks, block-row major. Per-pixel index maths lets one
+// path serve both a full upload and the cinematic sub-image update; it runs at load time only.
 static int PSP_TexelOffset( int x, int y, int tbw, qboolean swizzled )
 {
 	int	blockRow, blockCol;
@@ -262,10 +192,7 @@ static int PSP_TexelOffset( int x, int y, int tbw, qboolean swizzled )
 	return ( ( blockRow * ( tbw >> 3 ) + blockCol ) * 8 + ( y & 7 ) ) * 8 + ( x & 7 );
 }
 
-/*
- Convert an RGBA8888 rectangle into an already-allocated level, at
- (xoffset, yoffset). srcPitch is the source width in pixels.
-*/
+// Converts an RGBA8888 rectangle into an allocated 16-bit level at (xoffset, yoffset).
 static void PSP_TexBlit( pspTexture_t *tex, int level, int xoffset, int yoffset,
                          int width, int height, const byte *src, int srcPitch )
 {
@@ -301,37 +228,31 @@ static void PSP_TexBlit( pspTexture_t *tex, int level, int xoffset, int yoffset,
 	}
 }
 
-/*
- The GE DMA-reads this memory; the CPU just wrote it through the D-cache.
- Round the length up to a whole 64-byte line - a partial trailing line
- left dirty is the "renders in PPSSPP, garbage on hardware" failure, and
- PPSSPP cannot catch it because it emulates no D-cache at all.
- Allocations are memalign(16) and the levels are >= 128 bytes, so rounding
- up never reaches another live allocation's dirty data.
-*/
+// A partial trailing line left dirty renders fine in PPSSPP (no D-cache) and as garbage on
+// hardware. Levels are 16-aligned and >= 128 bytes, so rounding up stays inside them.
 static void PSP_TexWriteback( void *ptr, int bytes )
 {
 	sceKernelDcacheWritebackRange( ptr, ( bytes + 63 ) & ~63 );
 }
 
-/*
-===============
-PSP_TexUpload2D
+// The Xbox port's policy: picmip'd or mipmapped art, and 2D art from 256 (opaque) or 512 (alpha).
+// Cinematics never come here: they upload through qglTexImage2D and stay 16-bit.
+GLenum PSP_TexChooseFormat( GLenum internalFormat, qboolean alpha, int width, int height,
+	qboolean picmip, qboolean mipmap )
+{
+	const int	minSide = alpha ? 512 : 256;
 
-qglTexImage2D. Upstream's Upload32 (renderergl1/tr_image.c:741-801) has
-already resampled to a power of two, applied r_picmip, clamped to
-glConfig.maxTextureSize (512, published by psp_glimp.c) and light-scaled
-the pixels, then calls us once per mip level starting at 0. So there is
-no scaling, no gamma and no mip generation to do here - only format,
-padding, swizzle and cache.
+	if( !ri.Cvar_Get( "r_pspDxt", "1", 0 )->integer || width < 8 || height < 4 )
+		return internalFormat;
 
-internalFormat is upstream's own "does this image use alpha" answer
-(tr_image.c:651-739): the samples==3 branch picks a GL_RGB* or
-GL_LUMINANCE* token, samples==4 picks GL_RGBA* or GL_LUMINANCE_ALPHA*.
-glConfig.textureCompression is TC_NONE, so the GL_COMPRESSED_* and
-GL_RGB4_S3TC branches there are unreachable and are not handled.
-===============
-*/
+	if( !picmip && !mipmap && ( width < minSide || height < minSide ) )
+		return internalFormat;
+
+	return alpha ? GL_COMPRESSED_RGBA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+}
+
+// qglTexImage2D, once per level from 0. Upload32 has already resampled, picmip'd, clamped to
+// 512 and light-scaled; internalFormat carries its alpha answer or PSP_TexChooseFormat's DXT.
 void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei height, const void *rgba )
 {
 	pspTexture_t	*tex = PSP_TexSlot( pspCurrentTexture );
@@ -346,6 +267,12 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 
 	switch( internalFormat )
 	{
+		case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+			psm = GU_PSM_DXT1;
+			break;
+		case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+			psm = GU_PSM_DXT5;
+			break;
 		case GL_RGBA:
 		case GL_RGBA4:
 		case GL_RGBA8:
@@ -358,15 +285,7 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 			break;
 	}
 
-	/*
-	 Level 0 defines the texture. A later level arriving with a different
-	 format would mean upstream changed its mind mid-chain, which it does
-	 not do - but if it ever did, honouring level 0 keeps the levels
-	 consistent with the single sceGuTexMode that describes all of them.
-
-	 Levels must arrive in order and stop at the first gap. A re-upload of
-	 level 0 (RE_UploadCinematic, tr_backend.c:794) discards the old chain.
-	*/
+	// Level 0 defines the texture; a re-upload of it (cinematics) discards the old chain.
 	if( level == 0 )
 	{
 		if( tex->swizzled )
@@ -374,23 +293,15 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 
 		PSP_TexFreeLevels( tex );
 
+		// DXT needs whole 4x4 blocks and a tbw of at least 8; smaller images stay 16-bit.
+		if( PSP_TEX_IS_DXT( psm ) && ( width < 8 || height < 4 ) )
+			psm = ( psm == GU_PSM_DXT1 ) ? GU_PSM_5650 : GU_PSM_4444;
+
 		tex->psm = (unsigned char)psm;
 
-		/*
-		 Swizzling needs whole 16-byte x 8-row blocks. tbw padding
-		 guarantees the width side; the height side is why the mip chain
-		 stops below. A level 0 shorter than 8 rows cannot be swizzled at
-		 all, so that texture stays linear - it costs sampling bandwidth
-		 on an image too small for that to matter.
-
-		 The multiple-of-8 test is not decoration. The swizzled offset
-		 formula addresses whole blocks, so a level whose height is not a
-		 multiple of 8 would compute offsets past the end of its own
-		 allocation. Every level upstream produces is a power of two, so
-		 this never fires - but a heap overrun on hardware is not a bug
-		 worth leaving to that guarantee.
-		*/
-		tex->swizzled = ( height >= 8 && ( height & 7 ) == 0 ) ? 1 : 0;
+		// Swizzled offsets address whole 8-row blocks, so a shorter level would overrun.
+		// DXT blocks have their own layout and never swizzle.
+		tex->swizzled = ( !PSP_TEX_IS_DXT( psm ) && height >= 8 && ( height & 7 ) == 0 ) ? 1 : 0;
 
 		if( tex->swizzled )
 			pspTexSwizzledCount++;
@@ -400,20 +311,25 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 		if( level != tex->maxLevel + 1 )
 			return;		// out of order, or continuing past a level we refused
 
-		/*
-		 Stop the chain here rather than storing a level the swizzle
-		 cannot express. Upstream keeps halving down to 1x1; the GE just
-		 uses the deepest level we declared.
-		*/
+		// Stop the chain at the first level the format cannot express; the GE uses the deepest.
 		if( tex->swizzled && ( height < 8 || ( height & 7 ) != 0 ) )
+			return;
+		if( PSP_TEX_IS_DXT( tex->psm ) && ( width < 8 || height < 4 ) )
 			return;
 	}
 
-	tbw = ( width + 7 ) & ~7;
-	if( tbw < 8 )
-		tbw = 8;
+	if( PSP_TEX_IS_DXT( tex->psm ) )
+	{
+		tbw = width;
+	}
+	else
+	{
+		tbw = ( width + 7 ) & ~7;
+		if( tbw < 8 )
+			tbw = 8;
+	}
 
-	bytes = tbw * height * 2;
+	bytes = PSP_TexLevelBytes( tex->psm, tbw, height );
 
 	tex->level[ level ] = PSP_TexAllocLevel( bytes, &tex->where[ level ] );
 
@@ -426,10 +342,6 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 
 	pspTexBytesBySource[ tex->where[ level ] ] += bytes;
 
-	// Padding columns are sampled by nothing, but leaving them undefined
-	// makes a tbw bug look like random noise instead of a black edge.
-	Com_Memset( tex->level[ level ], 0, bytes );
-
 	tex->w[ level ]   = (short)width;
 	tex->h[ level ]   = (short)height;
 	tex->tbw[ level ] = (short)tbw;
@@ -437,15 +349,25 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 	tex->bytes       += bytes;
 	pspTexTotalBytes += bytes;
 
-	PSP_TexBlit( tex, level, 0, 0, width, height, (const byte *)rgba, width );
+	if( PSP_TEX_IS_DXT( tex->psm ) )
+	{
+		// r_pspDxtFast 0 brings back the least-squares refine: better colour, slower load.
+		const qboolean refine = ri.Cvar_Get( "r_pspDxtFast", "1", 0 )->integer ? qfalse : qtrue;
+		unsigned int countStart = Sys_PSP_CountBegin();
+
+		PSP_DxtCompress( tex->psm == GU_PSM_DXT5 ? qtrue : qfalse, refine, (const byte *)rgba,
+			width, height, tex->level[ level ] );
+		Sys_PSP_CountEnd( PSP_COUNT_DXT, countStart, (unsigned int)( width * height ) );
+	}
+	else
+	{
+		// Zeroed padding makes a tbw bug a black edge instead of noise.
+		Com_Memset( tex->level[ level ], 0, bytes );
+		PSP_TexBlit( tex, level, 0, 0, width, height, (const byte *)rgba, width );
+	}
 	PSP_TexWriteback( tex->level[ level ], bytes );
 
-	/*
-	 * Level 0 uploads replace the backing store. GL_Bind may suppress the
-	 * following bind because its cache still says this texture is current,
-	 * but the GE still has the old sceGuTexImage pointer. Re-emit the GU
-	 * texture state now so the next draw samples the newly uploaded pixels.
-	 */
+	// GL_Bind may skip the next bind of this name, but the GE still holds the old pointer.
 	if( level == 0 && pspGuReady )
 		PSP_TexBind( pspCurrentTexture );
 
@@ -470,15 +392,7 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 #endif
 }
 
-/*
-===============
-PSP_TexSubImage2D
-
-qglTexSubImage2D. Only reached from RE_StretchRaw's cinematic path
-(tr_backend.c:803), which re-uploads the whole of a 256x256 scratch image
-every frame it plays.
-===============
-*/
+// qglTexSubImage2D, reached only from RE_StretchRaw's per-frame cinematic update.
 void PSP_TexSubImage2D( GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, const void *rgba )
 {
 	pspTexture_t	*tex = PSP_TexSlot( pspCurrentTexture );
@@ -489,37 +403,24 @@ void PSP_TexSubImage2D( GLint level, GLint xoffset, GLint yoffset, GLsizei width
 	if( level < 0 || level > tex->maxLevel || !tex->level[ level ] )
 		return;
 
+	// Cinematic images are always 16-bit; a DXT texture here would be a misrouted update.
+	if( PSP_TEX_IS_DXT( tex->psm ) )
+		return;
+
 	if( xoffset < 0 || yoffset < 0 ||
 	    xoffset + width > tex->w[ level ] || yoffset + height > tex->h[ level ] )
 		return;
 
 	PSP_TexBlit( tex, level, xoffset, yoffset, width, height, (const byte *)rgba, width );
-	PSP_TexWriteback( tex->level[ level ], tex->tbw[ level ] * tex->h[ level ] * 2 );
+	PSP_TexWriteback( tex->level[ level ], PSP_TexLevelBytes( tex->psm, tex->tbw[ level ], tex->h[ level ] ) );
 }
 
-/*
-=================================================================
-Sampler state
-
-GL keeps filter and wrap per texture object; the GE keeps them as global
-render state. So they are stored per texture here and emitted at bind
-time - the same shape as Quake3PSP-mirror's GL_Bind
-(renderer/tr_backend.cpp:69-142), which reads image->filter and
-image->wrapClampMode back out at every bind.
-=================================================================
-*/
-
+// GL keeps filter and wrap per texture, the GE globally, so they are re-emitted at bind.
 static void PSP_TexEmitSamplerState( const pspTexture_t *tex )
 {
 	int	minFilter = tex->minFilter;
 
-	/*
-	 A mipmap min-filter on a texture with one level makes the GE sample a
-	 level that was never declared. Upstream sets gl_filter_min from
-	 r_textureMode ("GL_LINEAR_MIPMAP_NEAREST" by default) on every
-	 mipmapped image, and the mip chain here can be shorter than upstream
-	 uploaded - or empty - so the downgrade is not hypothetical.
-	*/
+	// A mipmap filter on a one-level texture makes the GE sample an undeclared level.
 	if( tex->maxLevel == 0 )
 	{
 		if( minFilter == GU_NEAREST_MIPMAP_NEAREST || minFilter == GU_NEAREST_MIPMAP_LINEAR )
@@ -532,21 +433,8 @@ static void PSP_TexEmitSamplerState( const pspTexture_t *tex )
 	sceGuTexWrap( tex->wrapS, tex->wrapT );
 }
 
-/*
-===============
-PSP_TexParameter
-
-qglTexParameterf/qglTexParameteri, both of which upstream only ever calls
-with filter and wrap tokens. GL_TEXTURE_MAX_ANISOTROPY_EXT is unreachable
-- tr_init.c leaves textureFilterAnisotropic false because psp_qgl.c
-publishes an empty extension string.
-
-R_GammaCorrect / GL_TextureMode (tr_image.c:110-120) walks every loaded
-image re-issuing these while each is bound, so a parameter change on the
-currently bound texture has to re-emit or the GE keeps the old sampler
-state until something else binds.
-===============
-*/
+// qglTexParameter*: filter and wrap only. GL_TextureMode re-issues these on the bound texture,
+// so a change there must be emitted at once or the GE keeps the old state.
 void PSP_TexParameter( GLenum pname, GLint value )
 {
 	pspTexture_t	*tex = PSP_TexSlot( pspCurrentTexture );
@@ -602,19 +490,8 @@ void PSP_TexParameter( GLenum pname, GLint value )
 		PSP_TexEmitSamplerState( tex );
 }
 
-/*
-===============
-PSP_TexBind
-
-qglBindTexture. GL_Bind (tr_backend.c:44-66) already suppresses redundant
-binds through glState.currenttextures, so this emits unconditionally.
-
-Name 0 is the unbind upstream does after creating an image
-(tr_image.c:899). Nothing is drawn in that state, so record it and emit
-nothing - leaving the previous texture's registers in place is harmless
-and cheaper than describing a texture that does not exist.
-===============
-*/
+// qglBindTexture. GL_Bind already drops redundant binds, so this always emits.
+// Name 0 is upstream's unbind after creating an image; nothing draws with it, so emit nothing.
 void PSP_TexBind( GLuint name )
 {
 	pspTexture_t	*tex;
@@ -656,38 +533,41 @@ void PSP_TexBind( GLuint name )
 
 	PSP_TexEmitSamplerState( tex );
 
-	/*
-	 The GE has a small texture cache keyed on the texture buffer address.
-	 Two textures can land on the same address across a free/malloc pair,
-	 so flushing at bind - not only after a CPU write - is what keeps a
-	 stale page from being sampled.
-	*/
+	// The GE texture cache is keyed on address, and a free/malloc pair can reuse one.
 	sceGuTexFlush();
 }
 
-/*
-===============
-PSP_TexMemReport
-
-Session 10 tunes r_picmip, com_soundMegs and the rest against measured
-peaks. This is where its texture number comes from, and printing it now
-costs ten lines instead of a re-measurement session later.
-===============
-*/
+// Texture memory by format and pool. Non-zero heap means the pool and VRAM ran out.
 void PSP_TexMemReport( void )
 {
 	int	poolUsed = 0, poolTotal = 0, poolLargest = 0;
+	int	dxt1 = 0, dxt5 = 0, dxtBytes = 0;
+	int	i;
 
-	ri.Printf( PRINT_ALL, "PSP textures: %d images, %d KB, %d swizzled / %d linear\n",
+	for( i = 0; i < PSP_MAX_TEXTURES; i++ )
+	{
+		const pspTexture_t	*tex = &pspTextures[ i ];
+
+		if( !tex->used || !PSP_TEX_IS_DXT( tex->psm ) )
+			continue;
+
+		if( tex->psm == GU_PSM_DXT1 )
+			dxt1++;
+		else
+			dxt5++;
+		dxtBytes += tex->bytes;
+	}
+
+	ri.Printf( PRINT_ALL, "PSP textures: %d images, %d KB, %d swizzled / %d linear; "
+		"%d DXT1 + %d DXT5 in %d KB\n",
 		pspTexCount,
 		pspTexTotalBytes / 1024,
 		pspTexSwizzledCount,
-		pspTexCount - pspTexSwizzledCount );
+		pspTexCount - pspTexSwizzledCount,
+		dxt1, dxt5, dxtBytes / 1024 );
 
 	PSP_PoolStats( &poolUsed, &poolTotal, &poolLargest );
 
-	// Which pool the texture set actually landed in. If heap is non-zero the
-	// other two ran out, and that - not the total - is what to re-budget.
 	ri.Printf( PRINT_ALL, "PSP texmem: pool %d KB, vram %d KB, heap %d KB "
 		"(pool %d/%d KB used, largest free %d KB, vram %d KB free)\n",
 		pspTexBytesBySource[ PSP_TEXMEM_POOL ] / 1024,

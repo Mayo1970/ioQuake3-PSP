@@ -12,21 +12,13 @@ set(RENDERER_COMMON_SOURCES
     ${SOURCE_DIR}/renderercommon/puff.c
 )
 
-# PSP renderer sources: psp_glimp.c owns the display (VRAM buffers, sceGuInit,
-# swap); psp_qgl.c owns the qgl* vtable that translates GL to sceGu, forwarding
-# to psp_tex.c (texture objects, 16-bit conversion, swizzle, cache) and
-# psp_draw.c (GL vertex arrays -> one interleaved sceGuDrawArray). All are
-# renderer sources because they define symbols renderergl1 links against.
-#
-# psp_tcmod.c (Session 12b) is the exception that proves that rule: it is
-# called BY tr_shade.c rather than by the qgl table, and it is the only file
-# here that includes renderergl1/tr_local.h - it needs tess, the shader stage
-# layout and tr.sinTable. It folds a stage's affine tcMod chain into one GE
-# texture matrix instead of running it per vertex.
+# PSP renderer sources: display, the qgl->sceGu vtable, textures (with the DXT encoder) and draws.
+# psp_tcmod.c is called by tr_shade.c, not the qgl table, and is the only one using tr_local.h.
 set(SDL_RENDERER_SOURCES
     ${SOURCE_DIR}/psp/psp_glimp.c
     ${SOURCE_DIR}/psp/psp_qgl.c
     ${SOURCE_DIR}/psp/psp_tex.c
+    ${SOURCE_DIR}/psp/psp_dxt.c
     ${SOURCE_DIR}/psp/psp_draw.c
     ${SOURCE_DIR}/psp/psp_tcmod.c
     ${SOURCE_DIR}/psp/psp_gamma.c

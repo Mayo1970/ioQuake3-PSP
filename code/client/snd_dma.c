@@ -403,7 +403,12 @@ Creates a default buzz sound if the file can't be loaded
 sfxHandle_t	S_Base_RegisterSound( const char *name, qboolean compressed ) {
 	sfx_t	*sfx;
 
+#ifdef __PSP__
+	// ADPCM stores mono sounds at 4 bits per sample, so one com_soundMegs unit holds 4x more.
+	compressed = qtrue;
+#else
 	compressed = qfalse;
+#endif
 	if (!s_soundStarted) {
 		return 0;
 	}

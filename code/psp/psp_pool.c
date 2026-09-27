@@ -1,10 +1,4 @@
-/*
-===========================================================================
-PSP port - code/psp/psp_pool.c
-
-Volatile-partition allocator. See psp_pool.h for why this exists.
-===========================================================================
-*/
+// Volatile-partition allocator; psp_pool.h says why it exists.
 
 #include <pspkernel.h>
 #include <pspsuspend.h>
@@ -16,15 +10,11 @@ Volatile-partition allocator. See psp_pool.h for why this exists.
 #include "psp_pool.h"
 
 #ifndef PSP_SOUND_MEGS
-#define PSP_SOUND_MEGS 2
+#define PSP_SOUND_MEGS 1
 #endif
 
-/*
- Block header. 16 bytes so every payload inherits the 16-byte alignment the
- GE and the VFPU want, without a per-allocation alignment dance.
-
- size is the PAYLOAD size; the header is not counted in it.
-*/
+// 16 bytes, so every payload keeps the 16-byte alignment the GE and VFPU want.
+// size is the payload size; the header is not counted in it.
 typedef struct pspPoolBlock_s {
 	struct pspPoolBlock_s	*next;
 	unsigned int		size;
@@ -42,16 +32,8 @@ static qboolean		psp_poolReady;
 static qboolean		psp_poolTried;
 static void		*psp_soundReserve;
 
-/*
-===============
-PSP_PoolInit
-
-sceKernelVolatileMemLock hands back the whole partition-5 block. It is
-paired with scePowerLock so the firmware cannot suspend into it while we
-hold it - without that, a lid close returns to a pool full of whatever the
-suspend image left behind, and every texture in it is garbage.
-===============
-*/
+// Locks the whole partition-5 block. scePowerLock stops a suspend from writing its image
+// over the pool, which would leave every texture in it garbage.
 qboolean PSP_PoolInit( void )
 {
 	void	*ptr  = NULL;
@@ -89,11 +71,7 @@ qboolean PSP_PoolInit( void )
 
 	psp_poolReady = qtrue;
 
-	/*
-	 Reserve one sound unit before any texture can consume the pool. The
-	 default sound budget is two units (~6.18 MB), so the second unit remains
-	 in the normal heap while this first unit lives in volatile memory.
-	*/
+	// One sound unit is reserved before any texture can take the pool; further units use the heap.
 	if( PSP_SOUND_MEGS > 0 )
 	{
 		psp_soundReserve = PSP_PoolAlloc(
@@ -181,12 +159,8 @@ void PSP_PoolFree( void *p )
 	b = (pspPoolBlock_t *)( (char *)p - PSP_POOL_HDR );
 	b->used = 0;
 
-	/*
-	 Coalesce forward, then find the predecessor and coalesce into it. The
-	 list is address-ordered by construction (splitting only ever inserts
-	 the remainder immediately after its parent), so a neighbour in the
-	 list is a neighbour in memory.
-	*/
+	// Coalesce forward, then into the predecessor. Splits insert the remainder right after its
+	// parent, so the list is address-ordered and a list neighbour is a memory neighbour.
 	while( b->next && !b->next->used )
 	{
 		b->size += b->next->size + PSP_POOL_HDR;

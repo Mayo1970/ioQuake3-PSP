@@ -529,8 +529,17 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		S_StartBackgroundTrack( VMA(1), VMA(2) );
 		return 0;
 	case CG_R_LOADWORLDMAP:
+#ifdef __PSP__
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+
+			re.LoadWorld( VMA(1) );
+			Sys_PSP_CountEnd( PSP_COUNT_WORLD, countStart, 0 );
+		}
+#else
 		re.LoadWorld( VMA(1) );
-		return 0; 
+#endif
+		return 0;
 	case CG_R_REGISTERMODEL:
 		return re.RegisterModel( VMA(1) );
 	case CG_R_REGISTERSKIN:
@@ -715,6 +724,10 @@ void CL_InitCGame( void ) {
 	vmInterpret_t		interpret;
 
 	t1 = Sys_Milliseconds();
+#ifdef __PSP__
+	// Closes the renderer/UI restart segment so the report after CG_INIT covers only cgame.
+	Sys_PSP_CountReport( "before CL_InitCGame", 0 );
+#endif
 
 	// put away the console
 	Con_Close();
@@ -759,6 +772,12 @@ void CL_InitCGame( void ) {
 	// have the renderer touch all its images, so they are present
 	// on the card even if the driver does deferred loading
 	re.EndRegistration();
+
+#ifdef __PSP__
+	// What is left once the map, models and textures are in.
+	Sys_PSP_HeapReport( "after CL_InitCGame" );
+	PSP_TexMemReport();
+#endif
 
 	// make sure everything is paged in
 	if (!Sys_LowPhysicalMemory()) {

@@ -1,22 +1,5 @@
-/*
-===========================================================================
-PSP port - code/psp/psp_platform.h
-
-Force-included by every translation unit via cmake/platforms/psp.cmake
-(-include). Holds the memory-budget floors (Wii wii_platform.h pattern,
-Q3PORT.md 1.4/2): #ifndef guards in code/qcommon/common.c pick these up
-ahead of upstream's 128/48/128 defaults.
-
-Session 2 values are the mirror's proven Slim numbers (Q3PORT.md 1.2).
-The actual com_hunkMegs cvar is computed at runtime from measured free
-memory in code/sys/sys_psp.c and injected as a boot command line; these
-#defines are only the floor MIN_COMHUNKMEGS protects against a bad
-measurement, and the DEF_* fallback if nothing is injected.
-
-The .bss shrinking audit (Wii wii_platform.h pattern) is Session 3 work -
-not started here.
-===========================================================================
-*/
+// Force-included into every translation unit (cmake/platforms/psp.cmake), game modules too.
+// Budget floors for common.c's #ifndef guards; sys_psp.c injects the real com_hunkMegs at boot.
 
 #ifndef __PSP_PLATFORM_H__
 #define __PSP_PLATFORM_H__
@@ -25,215 +8,72 @@ not started here.
 #define MIN_COMHUNKMEGS   15
 #define DEF_COMZONEMEGS   5
 
-/*
-.bss shrinking (Wii wii_platform.h pattern). The full audit is Session 3;
-this one entry is pulled forward because it alone blocks Session 2's gate.
+// Streams above 0 are VoIP only and USE_VOIP is off; stream 0 carries music and cinematics.
+// Upstream's 129 streams are 16.9 MB of .bss; one is 128 KB.
+#define MAX_RAW_STREAMS   1
 
-s_rawsamples (code/client/snd_dma.c:88) is
-[MAX_RAW_STREAMS][MAX_RAW_SAMPLES] portable_samplepair_t == 8 bytes each.
-Upstream MAX_RAW_STREAMS is MAX_CLIENTS*2+1 == 129, i.e. 16.9 MB of .bss.
-Streams 1..MAX_CLIENTS*2 exist only for VoIP (code/client/cl_parse.c:684,690,
-inside #ifdef USE_VOIP), and cmake/platforms/psp.cmake forces USE_VOIP OFF.
-Stream 0 carries cinematic audio (cl_cin.c:1154,1164) and background music
-(snd_dma.c:1478). 2 streams == 256 KB, saving 16.7 MB.
-*/
-#define MAX_RAW_STREAMS   2
-
-/*
-buckets (code/server/sv_main.c:367) is leakyBucket_t[MAX_BUCKETS], 40 bytes
-each. Upstream's 16384 is 640 KB of .bss, sized - per its own comment - "to
-make it more of an effort to DoS" an internet-facing dedicated server. This
-port is a client with a local listen server and BUILD_SERVER is OFF. Session 9
-gave it real sockets, so the rate limiter is no longer dead code - but a PSP
-listen server holds a handful of players over 802.11b, not the internet-facing
-dedicated server upstream sized this for. 256 entries is 10 KB, saving 630 KB.
-
-MAX_HASHES is a separate constant and stays at 1024: SVC_HashForAddress does
-hash &= (MAX_HASHES - 1), which is independent of the bucket count.
-*/
+// sv_main.c rate-limit buckets, 40 bytes each; a PSP listen server holds a handful of players.
+// MAX_HASHES stays 1024: SVC_HashForAddress masks with it independently of this count.
 #define MAX_BUCKETS       256
 
-/*
-===========================================================================
-Session 8 .bss cuts.
+// Session 8 .bss cuts: each sound unit costs ~3 MB, and these caps paid for it out of .bss.
 
-Enabling sound costs ~3.0 MB per unit: SND_setup (client/snd_mem.c:82-85)
-allocates com_soundMegs * 1536 sndBuffers of 2060 bytes. The current budget
-uses two units (~6.18 MB total), with one unit reserved in volatile memory
-before textures and one unit left in the normal heap. The Session 8 hardware
-run spent the first unit from the heap and the heap ran dry - libjpeg
-"Insufficient memory (case 4)", PSP_TexUpload2D failing on 4 KB, and
-FS_ReadFile handing back zeroed buffers that surfaced as "Not a JPEG file:
-starts with 0x00 0x00" and 'Couldn't find "fmt" chunk'.
-
-The heap grows by the same 3 MB (PSP_HEAP_KB, cmake/platforms/psp.cmake) and
-these five caps pay for it out of .bss, measured with
-psp-nm --size-sort -S. Every one of them is dead weight on this port
-specifically, not a quality trade.
-===========================================================================
-*/
-
-/*
-cls.globalServers[MAX_GLOBAL_SERVERS] and the parallel
-cls.globalServerAddresses (client/client.h:327,330) are ~1.0 MB of the 1.1 MB
-clientStatic_t at upstream's 4096, i.e. ~284 bytes per row.
-
-Session 8 cut this to 32 because psp_net.c was loopback-only and the browser
-could not return a single row. Session 9 raised it to 1024 once networking
-worked - but that number was never actually load-bearing on a hardware
-measurement, and it silently drifted out of sync with q3_ui/ui_servers2.c's
-own MAX_GLOBALSERVERS (UI-side storage per master tab), which stayed at 128.
-That mismatch is a real bug: a master list past 128 entries gets silently
-clobbered into the UI's last slot instead of appearing.
-
-A later pass dropped both sides to 32 (Session 8's proven-safe number) purely
-to make the two sides agree without guessing at unmeasured heap headroom.
-
-Now raised to 128 - matching q3_ui/ui_servers2.c's own MAX_LISTBOXITEMS, i.e.
-the actual number of rows the scroll-list widget can ever show at once, so
-storage capacity equals display capacity exactly. Hand-computed cost: ~24 KB
-here (cls.globalServers + globalServerAddresses) plus ~87 KB in
-ui_servers2.c's g_globalserverlist[6][128], against the ~2 MB of heap
-headroom previously measured - negligible, unlike the ~1.15 MB the 1024 case
-would have cost.
-
-ui_servers2.c's MAX_GLOBALSERVERS is #define'd to this constant directly
-(not a second literal) specifically so the two can never drift apart again -
-see that file rather than hand-syncing a number here.
-*/
+// Rows of cls.globalServers, ~284 bytes each; equals q3_ui's MAX_LISTBOXITEMS.
+// ui_servers2.c's MAX_GLOBALSERVERS is defined to this, so the two cannot drift apart.
 #define MAX_GLOBAL_SERVERS        128
 
-/*
-cl_serverStatusList[MAX_SERVERSTATUSREQUESTS] (client/cl_main.c:152) is 8244
-bytes per entry. Same story as above: 2 was a loopback-only number. 16 is
-upstream's value and costs 129 KB, which is affordable; this one is a
-request-in-flight count, not a result count, so there is nothing to gain by
-trimming it further.
-*/
+// Status requests in flight, 8244 bytes each; upstream's 16 is affordable.
 #define MAX_SERVERSTATUSREQUESTS  16
 
-/*
-Upstream's master.quake3arena.com (qcommon/qcommon.h:260) has been dead for
-years, so the internet browser resolves nothing without an override. The
-#ifndef guard there means this force-included header wins.
-
-update.quake3arena.com is dead the same way, but UPDATE_SERVER_NAME is guarded
-with "#if !defined UPDATE_SERVER_NAME && !defined STANDALONE" and CL_RequestMotd
-(client/cl_main.c:1517) resolves it at startup - a multi-second DNS stall on the
-main thread. That one is switched off with "+set cl_motd 0" from
-Sys_PSP_BuildBootCommandLine instead, so the constant is left alone.
-*/
+// master.quake3arena.com is dead. The dead update server is disabled with cl_motd 0 instead.
 #define MASTER_SERVER_NAME        "master.ioquake3.org"
 
-/*
-s_knownSfx[MAX_SFX] (client/snd_dma.c:73) is 100 bytes per entry, 400 KB.
-Upstream's 4096 is sized for MAX_SOUNDS (256) plus custom player sounds
-across 64 clients; this port's sound pool holds ~70 seconds of 22 kHz audio
-total, so it can never keep 4096 sounds resident. S_FindName raises a clean
-Com_Error at the cap rather than corrupting anything.
-*/
+// s_knownSfx rows, 100 bytes each; the sound pool can never hold 4096 sounds resident.
 #define MAX_SFX                   512
 
-/*
-MAX_DRAWSURFS (renderergl1/tr_local.h:789) is paid twice: 512 KB of hunk in
-backEndData_t and 512 KB of .bss in R_RadixSort's scratch array. The Session 7
-hardware run logged the whole of Q3DM1 as "1942 faces, 113 meshes, 42
-trisurfs", i.e. ~2100 surfaces in the entire map before culling. 8192 is four
-times the worst case, and R_SortDrawSurfs clamps rather than overruns.
-*/
+// Paid twice (hunk and R_RadixSort .bss). Q3DM1 has ~2100 surfaces; the sort clamps, it does not overrun.
 #define MAX_DRAWSURFS             0x2000
 
-/*
-edgeDefs[SHADER_MAX_VERTEXES][MAX_EDGE_DEFS] (renderergl1/tr_shadows.c:44) is
-256 KB and feeds stencil shadow volumes only. This build has no stencil bits
-at all - the Session 8 log's own renderer banner says "stencil(0-bits)",
-because the framebuffer is 16-bit 5650 - so RB_ShadowTessEnd cannot produce
-anything visible whatever this value is. cg_shadows 1 (blob shadows) is a
-shader and does not come through here.
-*/
+// Stencil shadow volume edges only; the 5650 framebuffer has no stencil bits.
 #define MAX_EDGE_DEFS             4
 
-/*
-===========================================================================
-Sys_PSP_HeapReport - heap and pak-handle instrumentation.
+// R_RegisterMD3 loads only this LOD (or the next better one); LOD1 halves a player model.
+#define PSP_MD3_LOD               1
 
-Written for the Session 7 map-load failure (unzOpen returning NULL for a pak
-opened seconds earlier - the fix is the handle cache in psp_file.c) and kept,
-because Session 8 needed it again for a completely different question and
-Session 10's memory budget is nothing but these numbers.
+// bot_thinktime default in ms for sv_bot.c and ai_main.c (upstream 100). Still cheat-protected.
+#define PSP_BOT_THINKTIME         "150"
 
-Call sites: qcommon/common.c (end of Com_Init), qcommon/files.c (unzOpen
-failure), server/sv_init.c (four points across a map load).
+// Area routing caches one server frame may build (be_aas_route.c). A first route can need ~130.
+#define PSP_AAS_FRAME_ROUTING_BUILDS 6
 
-Read the mallinfo figures carefully. `arena` is how much of the
-PSP_HEAP_SIZE_KB block newlib has actually sbrk'd so far, NOT the block - so
-"free 57 KB" means 57 KB left inside the current arena, with the rest of the
-block still available for the next extension. The real headroom is
-PSP_HEAP_KB minus peak arena: the Session 8 run peaked at 37,907 KB of 39,936,
-i.e. ~2 MB. Reading `free` as the whole story would have looked like an
-emergency in a run where no allocation failed.
-===========================================================================
-*/
+// Heap, hunk, zone, sound and pak-handle report. mallinfo "free" is inside the arena only:
+// the real heap headroom is PSP_HEAP_KB minus the peak arena.
 void Sys_PSP_HeapReport( const char *where );
 
-/*
-===========================================================================
-Sys_PSP_Zone* - Session 10 step 1b frame breakdown.
+// +1 while a hunk temp block not from FS_ReadFile is alive, -1 after it is freed (files.c).
+void FS_PSP_HoldTempMemory( int delta );
 
-Step 1a measured S_PaintChannels at 2-14% of wall time (~470 us per active
-channel, ~9% typical) and, far more importantly, an S_Update_ interval of
-78-173 ms: the port runs at 6-12 FPS. Mixing is therefore not the problem,
-and the question that decides every remaining optimisation - including
-whether the Media Engine is worth wiring up at all - is where the other ~90%
-of a 125 ms frame goes.
+// Free bytes now and lowest since the last call, or -1 before the pool exists.
+void Z_PSP_FreeMemory( int *freeBytes, int *lowestFree, int *largestFree );
+void SND_PSP_FreeMemory( int *freeBytes, int *lowestFree );
 
-Two candidates the log cannot separate:
-  - the interpreted cgame QVM ("Architecture doesn't have a bytecode
-    compiler"), which can NEVER be offloaded to the ME because QVM opcodes
-    trap back into engine syscalls
-  - the renderer backend / GE submission, which is exactly what the ME
-    gu-shared-list pattern targets
+// Texture memory by pool; defined in psp_tex.c, declared here for cl_cgame.c.
+void PSP_TexMemReport( void );
 
-ZONE_CGAME and ZONE_ENDFRAME are non-overlapping; ZONE_SVFRAME is the
-listen-server tick. Whatever is left of the frame after the three is
-reported as "other" (event loop, client prediction, sound paint, VM
-translation, file I/O).
+// ADPCM decode cache hits and decodes per frame-report window (psp_adpcm.c).
+void PSP_AdpcmCacheReport( void );
 
-Note ZONE_ENDFRAME includes GLimp_EndFrame's vblank wait. At 8 FPS that wait
-is ~0, but if this instrumentation outlives the current frame rate the zone
-stops meaning "GPU work".
-
-Remove all of this once the answer is in - it is a measurement, not a
-feature.
-===========================================================================
-*/
+// Frame breakdown: CGAME, ENDFRAME and SVFRAME partition the frame; the rest is "other".
+// ENDFRAME includes the vblank wait, so it stops meaning GPU work near 60 FPS.
 #define PSP_ZONE_CGAME      0
 #define PSP_ZONE_ENDFRAME   1
 #define PSP_ZONE_SVFRAME    2
 
-// Zones below this index partition the frame and are what "other" is computed
-// against. Zones at or above it are SUBSETS of one of them and are reported
-// but never added to the accounted total - double-counting them would make
-// "other" collapse to zero and hide whatever it is really holding.
+// Zones from here on are subsets of a top-level zone and are never added to the total.
 #define PSP_ZONE_TOPLEVEL   3
 
-/*
-Session 11c: endFrame is 42-60% of the frame and says nothing about WHY. It
-covers re.EndFrame, i.e. RB_ExecuteRenderCommands (CPU: tessellation, the
-clipper, vertex building, GE command submission) followed by GLimp_EndFrame,
-which is where the CPU can finally wait for the hardware. Splitting it tests
-the renderer critical path in the sampled workload:
-
-  geSync   sceGuFinish + sceGuSync  - residual wait for the GE to complete
-           the submitted list; zero means the wait did not extend that frame,
-           not that the GE was never busy or cannot bind another workload
-  vblank   sceDisplayWaitVblankStart + sceGuSwapBuffers - refresh wait, which
-           should be ~0 below 59.94 fps and would otherwise be silently
-           charged to the GE
-  CPU      endFrame minus the two, derived at print time - no instrumentation
-           inside PSP_DrawElements, whose per-draw call count would make the
-           timestamps themselves part of the measurement
-*/
+// geSync: residual wait for the GE list; vblank: refresh wait. CPU = endFrame minus both,
+// derived at print time so PSP_DrawElements carries no timestamps.
 #define PSP_ZONE_GESYNC     3
 #define PSP_ZONE_VBLANK     4
 #define PSP_ZONE_COUNT      5
@@ -242,15 +82,8 @@ void Sys_PSP_ZoneBegin( int zone );
 void Sys_PSP_ZoneEnd( int zone );
 void Sys_PSP_FrameMark( void );
 
-/*
- Session 12 measurement-only renderer profile.  These scopes are sampled one
- renderer frame in sixteen, so the per-draw PSP_DrawElements breakdown does
- not become a permanent cost.  All scopes below are timed except drawScan,
- drawSubmit, fastTc, and surfFace, which are counted without timestamps; all
- four are covered by the timed backendSurfs scope.  Values are independent
- timings: a caller scope may contain another scope, therefore their reported
- shares must not be added.
-*/
+// Renderer profile, sampled one frame in four. drawScan, drawSubmit, fastTc and surfFace
+// are counted, not timed. Scopes may nest, so their shares must not be added.
 #define PSP_RPROF_NORMALIZE     0
 #define PSP_RPROF_MD3LERP       1
 #define PSP_RPROF_ENVTC         2
@@ -264,18 +97,9 @@ void Sys_PSP_FrameMark( void );
 #define PSP_RPROF_DRAW_CLASSIFY 10
 #define PSP_RPROF_DRAW_CLIP     11
 #define PSP_RPROF_DRAW_SUBMIT   12
-/*
- Session 12b.  Stages psp_tcmod.c claimed, i.e. that skipped ComputeTexCoords'
- per-vertex texture-coordinate copy entirely.  Unlike every scope above it this
- one is per STAGE, not per vertex, so it is counted without a timestamp; its
- value is the CALL COUNT, which says how much of the frame took the fast path.
-*/
+// Per stage, not per vertex: the call count of stages psp_tcmod.c took the fast path for.
 #define PSP_RPROF_FASTTC        13
-/*
- Session 13b.  These scopes attribute the frame-time remainder before any
- further optimization is selected.  They deliberately overlap: report each
- independently and do not sum their shares.
-*/
+// Session 13b remainder attribution; these overlap, so report each on its own.
 #define PSP_RPROF_WORLD         14
 #define PSP_RPROF_DEFORM        15
 #define PSP_RPROF_SURF_TRI      16
@@ -286,17 +110,16 @@ void Sys_PSP_FrameMark( void );
 #define PSP_RPROF_FOG           21
 #define PSP_RPROF_CLIENT_FRAME  22
 #define PSP_RPROF_SOUND_UPDATE  23
-/* Session 13c: nested inside sound.  soundRest is derived from sound minus
-   soundPaint in the report so no extra timestamps disturb the hot path. */
+// Nested inside sound; soundRest is derived as sound minus soundPaint.
 #define PSP_RPROF_SOUND_PAINT   24
-/* Session 15: split the native cgame call into its CPU-side stages. */
+// Session 15: the native cgame call split into its CPU-side stages.
 #define PSP_RPROF_CGAME_SIM     25
 #define PSP_RPROF_CGAME_ENTS    26
 #define PSP_RPROF_CGAME_WEAPON  27
 #define PSP_RPROF_CGAME_DRAW    28
 #define PSP_RPROF_BACKEND_CMDS  29
 #define PSP_RPROF_BACKEND_SURFS 30
-/* Session 16: disjoint native-cgame attribution and syscall bridge timing. */
+// Session 16: disjoint native-cgame attribution and syscall bridge timing.
 #define PSP_RPROF_CGAME_SNAPSHOT 31
 #define PSP_RPROF_CGAME_PREDICT   32
 #define PSP_RPROF_CGAME_VIEW      33
@@ -318,11 +141,8 @@ void Sys_PSP_FrameMark( void );
 #define PSP_RPROF_SOUND_POOL_ALLOC 49
 #define PSP_RPROF_COUNT           50
 
-/*
- Goal 22 file-read stall attribution.  These are independent operation
- categories: parent operations intentionally overlap their child stages.
- The sink aggregates every event and retains only slow (>=1 ms) window tails.
-*/
+// Goal 22 file-read stall categories; parents overlap their child stages.
+// The sink aggregates every event and keeps only slow (>=1 ms) window tails.
 #define PSP_TRACE_VF_OPEN             0
 #define PSP_TRACE_VF_READ             1
 #define PSP_TRACE_VF_SEEK             2
@@ -343,12 +163,8 @@ void Sys_PSP_FrameMark( void );
 #define PSP_TRACE_COUNT              17
 
 #ifdef PSP_STUTTER_TRACE
-/*
- * Goal 23 stutter attribution.  These records are emitted only for complete
- * operations and slow events; all calls still contribute to the aggregate
- * counters.  The enum is intentionally stable because the post-workload
- * trace is consumed outside the PSP.
- */
+// Goal 23 stutter records, emitted for complete slow operations only.
+// The values are stable because the trace is decoded off the PSP.
 #define PSP_STUTTER_PHASE_NONE              0
 #define PSP_STUTTER_PHASE_LOOKUP_TOTAL      1
 #define PSP_STUTTER_PHASE_LOOSE_STAT        2
@@ -404,6 +220,9 @@ void Sys_PSP_RenderProfileSoundLoad( const char *name, int rate, int width,
 	int channels, int bytes, int loadCount );
 unsigned int Sys_PSP_RenderProfileCGameSyscallBegin( int callNum );
 void Sys_PSP_RenderProfileCGameSyscallEnd( int callNum, unsigned int start );
+// One shader batch, RB_BeginSurface to RB_EndSurface; Begin returns 0 outside sampled frames.
+unsigned int Sys_PSP_RenderProfileBatchBegin( void );
+void Sys_PSP_RenderProfileBatchEnd( unsigned int start, const char *shader, int numVertexes );
 #else
 #define Sys_PSP_RenderProfileFrameBegin() ((void)0)
 #define Sys_PSP_RenderProfileBegin( scope ) ((void)0)
@@ -413,14 +232,60 @@ void Sys_PSP_RenderProfileCGameSyscallEnd( int callNum, unsigned int start );
 #define Sys_PSP_RenderProfileSoundLoad( name, rate, width, channels, bytes, loadCount ) ((void)0)
 #define Sys_PSP_RenderProfileCGameSyscallBegin( callNum ) ( 0U )
 #define Sys_PSP_RenderProfileCGameSyscallEnd( callNum, start ) ((void)0)
+#define Sys_PSP_RenderProfileBatchBegin() ( 0U )
+#define Sys_PSP_RenderProfileBatchEnd( start, shader, numVertexes ) ((void)(start))
+#endif
+
+// Unsampled counters for load and server work; each frame and heap report prints and resets them.
+// Debug only: SV_Trace alone makes hundreds of timed calls per fight frame.
+#define PSP_COUNT_FS_LOOKUP       0
+#define PSP_COUNT_FS_MISS         1
+#define PSP_COUNT_FS_LOOSE        2
+// Loose-folder checks skipped because the qpath's top folder is not in that folder (files.c).
+#define PSP_COUNT_FS_LOOSE_SKIP   3
+#define PSP_COUNT_FS_PACKOPEN     4
+// New pk3 handles (unzOpen), used when a lookup needs its own cursor.
+#define PSP_COUNT_FS_UNZOPEN      5
+#define PSP_COUNT_FS_READ         6
+#define PSP_COUNT_IMAGE_LOAD      7
+#define PSP_COUNT_IMAGE_CREATE    8
+#define PSP_COUNT_DXT             9
+#define PSP_COUNT_WORLD           10
+#define PSP_COUNT_SV_BOTS         11
+#define PSP_COUNT_SV_GAME         12
+#define PSP_COUNT_SV_SNAP         13
+#define PSP_COUNT_SV_TRACE        14
+#define PSP_COUNT_AAS_AREACACHE   15
+#define PSP_COUNT_AAS_PORTALCACHE 16
+#define PSP_COUNT_AAS_FREE_MEM    17
+#define PSP_COUNT_AAS_FREE_CAP    18
+// Bot file loads through the game syscalls (sv_game.c): character, chat, item and weapon weights.
+#define PSP_COUNT_BOT_CHAR        19
+#define PSP_COUNT_BOT_CHAT        20
+#define PSP_COUNT_BOT_WEIGHT      21
+// Route queries refused because the server frame's routing-cache build budget is spent.
+#define PSP_COUNT_AAS_BUDGET      22
+#define PSP_COUNT_COUNT           23
+
+#if defined( PSP_RENDER_PROFILE ) && !defined( NDEBUG )
+#define PSP_COUNTERS 1
+unsigned int Sys_PSP_CountBegin( void );
+void Sys_PSP_CountEnd( int counter, unsigned int start, unsigned int value );
+void Sys_PSP_CountEvent( int counter );
+void Sys_PSP_CountMiss( const char *qpath );
+void Sys_PSP_CountReport( const char *where, unsigned int frameCount );
+#else
+#define Sys_PSP_CountBegin() ( 0U )
+#define Sys_PSP_CountEnd( counter, start, value ) ((void)(start))
+#define Sys_PSP_CountEvent( counter ) ((void)0)
+#define Sys_PSP_CountMiss( qpath ) ((void)0)
+#define Sys_PSP_CountReport( where, frameCount ) ((void)0)
 #endif
 void Sys_PSP_FileTraceFrameBegin( void );
 void Sys_PSP_FileTraceEvent( int category, unsigned int elapsedUs,
 	unsigned int value );
 
-// Peak bytes taken from psp_draw.c's vertex arena, in KB. Defined there;
-// declared here rather than in psp_draw.h so sys_psp.c can report it without
-// including the renderer's tr_common.h.
+// Vertex arena peak in KB, declared here so sys_psp.c need not include tr_common.h.
 int PSP_DrawArenaPeakKB( void );
 
 void PSP_StaticWorld_ClassifySurface( const void *surface, const void *shader,
@@ -428,22 +293,14 @@ void PSP_StaticWorld_ClassifySurface( const void *surface, const void *shader,
 void PSP_StaticWorld_Reset( void );
 void PSP_StaticWorld_Report( void );
 
-/*
- Whether a UDP socket is currently bound. Defined in psp_net.c; declared here
- so psp_glimp.c can gate its per-frame yield on it without pulling in
- qcommon's networking prototypes. See r_pspNetVblank in psp_glimp.c.
-
- Plain int, not qboolean: this header is force-included into every translation
- unit from the command line (see cmake/platforms/psp.cmake), including the game
- modules, where q_shared.h has not been seen yet. Nothing else in this file uses
- an engine type either - keep it that way.
-*/
+// Whether a UDP socket is bound (psp_net.c). Plain int, not qboolean: game modules include
+// this header before q_shared.h, so nothing here may use an engine type.
 int NET_PSP_IsSocketOpen( void );
 
-/* Whether the client is currently connecting to or playing on a remote
-   server. Defined in code/client/cl_main.c so the renderer can keep the
-   network vblank rendezvous without treating the WLAN socket itself as
-   proof that a remote game is active. */
+// Whether the client is connecting to or playing on a remote server (cl_main.c).
 int CL_PSP_IsRemoteSession( void );
+
+// Resets the routing-cache build budget (be_aas_route.c); SV_BotFrame calls it every server frame.
+void AAS_PSP_BeginServerFrame( void );
 
 #endif // __PSP_PLATFORM_H__

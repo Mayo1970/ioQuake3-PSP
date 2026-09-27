@@ -26,6 +26,20 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #define	WAVEVALUE( table, base, amplitude, phase, freq )  ((base) + table[ ( (int64_t) ( ( (phase) + tess.shaderTime * (freq) ) * FUNCTABLE_SIZE ) ) & FUNCTABLE_MASK ] * (amplitude))
 
+#ifdef __PSP__
+// Fraction of t, reduced in double once per call so per-vertex indexes stay float/int32:
+// soft-float doubles per vertex made slime1 cost 14-17 ms per frame. (floor) is the double one.
+static float RB_PSP_Fraction( double t )
+{
+	return (float)( t - (floor)( t ) );
+}
+
+static float RB_PSP_WaveFraction( float phase, float freq )
+{
+	return RB_PSP_Fraction( phase + tess.shaderTime * freq );
+}
+#endif
+
 static float *TableForFunc( genFunc_t func ) 
 {
 	switch ( func )
@@ -123,6 +137,9 @@ void RB_CalcDeformVertexes( deformStage_t *ds )
 	float	*xyz = ( float * ) tess.xyz;
 	float	*normal = ( float * ) tess.normal;
 	float	*table;
+#ifdef __PSP__
+	float	now;
+#endif
 
 	if ( ds->deformationWave.frequency == 0 )
 	{
@@ -140,15 +157,23 @@ void RB_CalcDeformVertexes( deformStage_t *ds )
 	else
 	{
 		table = TableForFunc( ds->deformationWave.func );
+#ifdef __PSP__
+		now = RB_PSP_WaveFraction( ds->deformationWave.phase, ds->deformationWave.frequency );
+#endif
 
 		for ( i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4 )
 		{
 			float off = ( xyz[0] + xyz[1] + xyz[2] ) * ds->deformationSpread;
 
-			scale = WAVEVALUE( table, ds->deformationWave.base, 
+#ifdef __PSP__
+			scale = ds->deformationWave.base + table[ (int)( ( off + now ) * FUNCTABLE_SIZE ) & FUNCTABLE_MASK ]
+				* ds->deformationWave.amplitude;
+#else
+			scale = WAVEVALUE( table, ds->deformationWave.base,
 				ds->deformationWave.amplitude,
 				ds->deformationWave.phase + off,
 				ds->deformationWave.frequency );
+#endif
 
 			VectorScale( normal, scale, offset );
 			
@@ -171,21 +196,39 @@ void RB_CalcDeformNormals( deformStage_t *ds ) {
 	float	scale;
 	float	*xyz = ( float * ) tess.xyz;
 	float	*normal = ( float * ) tess.normal;
+#ifdef __PSP__
+	// The noise time, split once in double exactly as R_NoiseGet4f splits it on every call.
+	double	t = tess.shaderTime * ds->deformationWave.frequency;
+	int		it = ( int ) floor( t );
+	float	ft = t - it;
+#endif
 
 	for ( i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4 ) {
 		scale = 0.98f;
+#ifdef __PSP__
+		scale = R_PSP_NoiseGet4fSplit( xyz[0] * scale, xyz[1] * scale, xyz[2] * scale, it, ft );
+#else
 		scale = R_NoiseGet4f( xyz[0] * scale, xyz[1] * scale, xyz[2] * scale,
 			tess.shaderTime * ds->deformationWave.frequency );
+#endif
 		normal[ 0 ] += ds->deformationWave.amplitude * scale;
 
 		scale = 0.98f;
+#ifdef __PSP__
+		scale = R_PSP_NoiseGet4fSplit( 100 + xyz[0] * scale, xyz[1] * scale, xyz[2] * scale, it, ft );
+#else
 		scale = R_NoiseGet4f( 100 + xyz[0] * scale, xyz[1] * scale, xyz[2] * scale,
 			tess.shaderTime * ds->deformationWave.frequency );
+#endif
 		normal[ 1 ] += ds->deformationWave.amplitude * scale;
 
 		scale = 0.98f;
+#ifdef __PSP__
+		scale = R_PSP_NoiseGet4fSplit( 200 + xyz[0] * scale, xyz[1] * scale, xyz[2] * scale, it, ft );
+#else
 		scale = R_NoiseGet4f( 200 + xyz[0] * scale, xyz[1] * scale, xyz[2] * scale,
 			tess.shaderTime * ds->deformationWave.frequency );
+#endif
 		normal[ 2 ] += ds->deformationWave.amplitude * scale;
 
 		VectorNormalizeFast( normal );
@@ -203,15 +246,32 @@ void RB_CalcBulgeVertexes( deformStage_t *ds ) {
 	const float *st = ( const float * ) tess.texCoords[0];
 	float		*xyz = ( float * ) tess.xyz;
 	float		*normal = ( float * ) tess.normal;
+#ifdef __PSP__
+	float		now, width;
+
+	// now as a table position in [0, FUNCTABLE_SIZE); off can move by one of the 1024 entries.
+	now = RB_PSP_Fraction( (double)backEnd.refdef.time * 0.001 * ds->bulgeSpeed / ( M_PI * 2 ) )
+		* FUNCTABLE_SIZE;
+	width = (float)( FUNCTABLE_SIZE / (M_PI*2) ) * ds->bulgeWidth;
+#else
 	double		now;
 
 	now = backEnd.refdef.time * 0.001 * ds->bulgeSpeed;
+#endif
 
 	for ( i = 0; i < tess.numVertexes; i++, xyz += 4, st += 4, normal += 4 ) {
+#ifdef __PSP__
+		int off;
+#else
 		int64_t off;
+#endif
 		float scale;
 
+#ifdef __PSP__
+		off = (int)( st[0] * width + now );
+#else
 		off = (float)( FUNCTABLE_SIZE / (M_PI*2) ) * ( st[0] * ds->bulgeWidth + now );
+#endif
 
 		scale = tr.sinTable[ off & FUNCTABLE_MASK ] * ds->bulgeHeight;
 			
@@ -925,6 +985,18 @@ void RB_CalcEnvironmentTexCoords( float *st )
 void RB_CalcTurbulentTexCoords( const waveForm_t *wf, float *st )
 {
 	int i;
+#ifdef __PSP__
+	float now = RB_PSP_WaveFraction( wf->phase, wf->frequency );
+
+	for ( i = 0; i < tess.numVertexes; i++, st += 2 )
+	{
+		float s = st[0];
+		float t = st[1];
+
+		st[0] = s + tr.sinTable[ ( ( int ) ( ( ( tess.xyz[i][0] + tess.xyz[i][2] )* 1.0f/128 * 0.125f + now ) * FUNCTABLE_SIZE ) ) & ( FUNCTABLE_MASK ) ] * wf->amplitude;
+		st[1] = t + tr.sinTable[ ( ( int ) ( ( tess.xyz[i][1] * 1.0f/128 * 0.125f + now ) * FUNCTABLE_SIZE ) ) & ( FUNCTABLE_MASK ) ] * wf->amplitude;
+	}
+#else
 	double now;
 
 	now = ( wf->phase + tess.shaderTime * wf->frequency );
@@ -937,6 +1009,7 @@ void RB_CalcTurbulentTexCoords( const waveForm_t *wf, float *st )
 		st[0] = s + tr.sinTable[ ( ( int64_t ) ( ( ( tess.xyz[i][0] + tess.xyz[i][2] )* 1.0/128 * 0.125 + now ) * FUNCTABLE_SIZE ) ) & ( FUNCTABLE_MASK ) ] * wf->amplitude;
 		st[1] = t + tr.sinTable[ ( ( int64_t ) ( ( tess.xyz[i][1] * 1.0/128 * 0.125 + now ) * FUNCTABLE_SIZE ) ) & ( FUNCTABLE_MASK ) ] * wf->amplitude;
 	}
+#endif
 }
 
 /*
@@ -972,11 +1045,25 @@ void RB_CalcScrollTexCoords( const float scrollSpeed[2], float *st )
 	adjustedScrollS = adjustedScrollS - floor( adjustedScrollS );
 	adjustedScrollT = adjustedScrollT - floor( adjustedScrollT );
 
+#ifdef __PSP__
+	{
+		// A double operand made every per-vertex add a soft-float double add.
+		const float scrollS = (float)adjustedScrollS;
+		const float scrollT = (float)adjustedScrollT;
+
+		for ( i = 0; i < tess.numVertexes; i++, st += 2 )
+		{
+			st[0] += scrollS;
+			st[1] += scrollT;
+		}
+	}
+#else
 	for ( i = 0; i < tess.numVertexes; i++, st += 2 )
 	{
 		st[0] += adjustedScrollS;
 		st[1] += adjustedScrollT;
 	}
+#endif
 }
 
 /*

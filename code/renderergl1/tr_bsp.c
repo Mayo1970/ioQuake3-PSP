@@ -1502,7 +1502,12 @@ static	void R_LoadPlanes( lump_t *l ) {
 	if (l->filelen % sizeof(*in))
 		ri.Error (ERR_DROP, "LoadMap: funny lump size in %s",s_worldData.name);
 	count = l->filelen / sizeof(*in);
+#ifdef __PSP__
+	// Upstream allocates twice the planes and never uses the second half.
+	out = ri.Hunk_Alloc ( count*sizeof(*out), h_low);
+#else
 	out = ri.Hunk_Alloc ( count*2*sizeof(*out), h_low);	
+#endif
 	
 	s_worldData.planes = out;
 	s_worldData.numplanes = count;
@@ -1781,6 +1786,255 @@ qboolean R_GetEntityToken( char *buffer, int size ) {
 	}
 }
 
+#ifdef __PSP__
+// The renderer is linked into the engine, so the BSP streams through the filesystem directly.
+long	FS_FOpenFileRead( const char *qpath, fileHandle_t *file, qboolean uniqueFILE );
+int		FS_Read( void *buffer, int len, fileHandle_t f );
+int		FS_Seek( fileHandle_t f, long offset, int origin );
+void	FS_FCloseFile( fileHandle_t f );
+int		Hunk_MemoryRemaining( void );
+int		CM_NumClusters( void );
+
+// One step's lumps at a time, so the whole BSP is never in hunk temp memory (8 MB on q3dm11).
+static struct {
+	fileHandle_t	file;
+	int				length;
+	int				position;
+	int				lowestFree;
+	int				held;		// lump blocks holding the FS load stack
+	dheader_t		header;
+} pspBsp;
+
+// The most lumps one read takes: the late and surface lumps together.
+#define PSP_BSP_STEP_LUMPS 13
+// The vis lump's cluster count and cluster size, all the pass reads of it when the CM shares it.
+#define PSP_BSP_VIS_HEADER 8
+
+static const int pspShaderLumps[] = { LUMP_SHADERS };
+static const int pspLightmapLumps[] = { LUMP_LIGHTMAPS };
+static const int pspPlaneLumps[] = { LUMP_PLANES };
+// q3map writes these before, between and after the surface lumps, so they share the surfaces' pass.
+static const int pspLateLumps[] = { LUMP_LEAFSURFACES, LUMP_NODES, LUMP_LEAFS, LUMP_MODELS,
+	LUMP_ENTITIES, LUMP_LIGHTGRID, LUMP_VISIBILITY };
+// The fog lump lies between the surface lumps in the file, so both steps share one read.
+static const int pspSurfaceLumps[] = { LUMP_FOGS, LUMP_SURFACES, LUMP_DRAWVERTS, LUMP_DRAWINDEXES,
+	LUMP_BRUSHES, LUMP_BRUSHSIDES };
+static const int pspVisLumps[] = { LUMP_VISIBILITY };
+
+// Also called from RE_Shutdown: an ERR_DROP during the load reaches it before FS handles change.
+void R_PSP_BspClose( void ) {
+	if ( pspBsp.file ) {
+		FS_FCloseFile( pspBsp.file );
+	}
+	pspBsp.file = 0;
+	if ( pspBsp.held ) {
+		FS_PSP_HoldTempMemory( -pspBsp.held );
+		pspBsp.held = 0;
+	}
+}
+
+// A pk3 FS_SEEK_SET inflates again from the file start, so forward moves skip from here.
+static void R_PSP_BspRead( void *buffer, int offset, int bytes ) {
+	if ( offset > pspBsp.position ) {
+		FS_Seek( pspBsp.file, offset - pspBsp.position, FS_SEEK_CUR );
+	} else if ( offset < pspBsp.position ) {
+		FS_Seek( pspBsp.file, offset, FS_SEEK_SET );
+	}
+	pspBsp.position = offset;
+	if ( FS_Read( buffer, bytes, pspBsp.file ) != bytes ) {
+		ri.Error( ERR_DROP, "RE_LoadWorldMap: short read in %s", s_worldData.name );
+	}
+	pspBsp.position += bytes;
+}
+
+static void R_PSP_BspOpen( const char *name ) {
+	int		i;
+
+	// A handle left by a failed load may already be reused, so it is dropped, not closed.
+	pspBsp.file = 0;
+	pspBsp.length = FS_FOpenFileRead( name, &pspBsp.file, qtrue );
+	if ( !pspBsp.file || pspBsp.length < (int)sizeof( dheader_t ) ) {
+		R_PSP_BspClose();
+		ri.Error( ERR_DROP, "RE_LoadWorldMap: %s not found", name );
+	}
+	pspBsp.position = 0;
+	pspBsp.lowestFree = Hunk_MemoryRemaining();
+	if ( FS_Read( &pspBsp.header, sizeof( dheader_t ), pspBsp.file ) != sizeof( dheader_t ) ) {
+		R_PSP_BspClose();
+		ri.Error( ERR_DROP, "RE_LoadWorldMap: short read in %s", name );
+	}
+	pspBsp.position = sizeof( dheader_t );
+
+	for ( i = 0 ; i < sizeof( dheader_t ) / 4 ; i++ ) {
+		( (int *)&pspBsp.header )[i] = LittleLong( ( (int *)&pspBsp.header )[i] );
+	}
+	if ( pspBsp.header.version != BSP_VERSION ) {
+		R_PSP_BspClose();
+		ri.Error( ERR_DROP, "RE_LoadWorldMap: %s has wrong version number (%i should be %i)",
+			name, pspBsp.header.version, BSP_VERSION );
+	}
+	for ( i = 0 ; i < HEADER_LUMPS ; i++ ) {
+		const lump_t	*l = &pspBsp.header.lumps[i];
+
+		if ( l->fileofs < 0 || l->filelen < 0 || l->fileofs > pspBsp.length ||
+			l->filelen > pspBsp.length - l->fileofs ) {
+			R_PSP_BspClose();
+			ri.Error( ERR_DROP, "RE_LoadWorldMap: lump %d is corrupt in %s", i, name );
+		}
+	}
+}
+
+// Reads the lumps in file order into temp blocks and repoints them there, so the upstream loaders
+// run unchanged on fileBase. Lumps from split on go to a second block, allocated last to free first.
+static void R_PSP_BspReadBlocks( lump_t *l, int count, int split, byte **blocks ) {
+	int		ofs[PSP_BSP_STEP_LUMPS], order[PSP_BSP_STEP_LUMPS];
+	int		total[2] = { 0, 0 };
+	int		i, j;
+
+	for ( i = 0 ; i < count ; i++ ) {
+		ofs[i] = total[i >= split];
+		// At least one zero byte after each lump, so an unterminated entity string still ends.
+		total[i >= split] += ( l[i].filelen + 4 ) & ~3;
+		order[i] = i;
+	}
+	for ( i = 1 ; i < count ; i++ ) {
+		for ( j = i ; j > 0 && l[order[j - 1]].fileofs > l[order[j]].fileofs ; j-- ) {
+			int	swap = order[j];
+
+			order[j] = order[j - 1];
+			order[j - 1] = swap;
+		}
+	}
+
+	blocks[1] = NULL;
+	for ( j = 0 ; j < ( split < count ? 2 : 1 ) ; j++ ) {
+		blocks[j] = ri.Hunk_AllocateTempMemory( total[j] );
+		// Without this, the first image FS_FreeFile in the step clears temp memory under the block.
+		FS_PSP_HoldTempMemory( 1 );
+		pspBsp.held++;
+	}
+	for ( i = 0 ; i < count ; i++ ) {
+		j = order[i];
+		if ( l[j].filelen ) {
+			R_PSP_BspRead( blocks[j >= split] + ofs[j], l[j].fileofs, l[j].filelen );
+		}
+	}
+	for ( i = 0 ; i < count ; i++ ) {
+		Com_Memset( blocks[i >= split] + ofs[i] + l[i].filelen, 0,
+			( ( l[i].filelen + 4 ) & ~3 ) - l[i].filelen );
+		l[i].fileofs = ofs[i];
+	}
+	fileBase = blocks[0];
+}
+
+// Copies the header entries, so a step can trim a lump before the read.
+static void R_PSP_BspPickLumps( lump_t *out, const int *lumps, int count ) {
+	int		i;
+
+	for ( i = 0 ; i < count ; i++ ) {
+		out[i] = pspBsp.header.lumps[lumps[i]];
+	}
+}
+
+static byte *R_PSP_BspReadLumps( lump_t *out, const int *lumps, int count ) {
+	byte	*blocks[2];
+
+	R_PSP_BspPickLumps( out, lumps, count );
+	R_PSP_BspReadBlocks( out, count, count, blocks );
+	return blocks[0];
+}
+
+// The step's world data is all allocated by now, so this is the step's low point.
+static void R_PSP_BspFreeLumps( byte *block ) {
+	int		remaining = Hunk_MemoryRemaining();
+
+	if ( remaining < pspBsp.lowestFree ) {
+		pspBsp.lowestFree = remaining;
+	}
+	ri.Hunk_FreeTempMemory( block );
+	FS_PSP_HoldTempMemory( -1 );
+	pspBsp.held--;
+}
+
+// Shares the CM's copy when it holds this map's clusters; the pass then read only the header.
+static void R_PSP_BspLoadVisibility( const lump_t *headerLump ) {
+	lump_t		l = pspBsp.header.lumps[LUMP_VISIBILITY];
+	const int	*header = (const int *)( fileBase + headerLump->fileofs );
+	byte		*block;
+
+	tr.externalVisData = NULL;
+	if ( l.filelen >= PSP_BSP_VIS_HEADER && LittleLong( header[0] ) > 1 &&
+		LittleLong( header[0] ) == CM_NumClusters() &&
+		ri.CM_ClusterPVS( 1 ) - ri.CM_ClusterPVS( 0 ) == LittleLong( header[1] ) ) {
+		tr.externalVisData = ri.CM_ClusterPVS( 0 );
+		l.fileofs = headerLump->fileofs;
+		R_LoadVisibility( &l );
+		return;
+	}
+	// Seeks back to the lump: a second pass, only for a map the CM does not hold.
+	block = R_PSP_BspReadLumps( &l, pspVisLumps, 1 );
+	R_LoadVisibility( &l );
+	R_PSP_BspFreeLumps( block );
+}
+
+// Same loaders in the same order as upstream; with vertex light, q3dm11 reads the file in one pass.
+static void R_PSP_BspLoadLumps( void ) {
+	lump_t	l[PSP_BSP_STEP_LUMPS];
+	byte	*block[2];
+	int		count;
+
+	block[0] = R_PSP_BspReadLumps( l, pspShaderLumps, 1 );
+	R_LoadShaders( &l[0] );
+	R_PSP_BspFreeLumps( block[0] );
+
+	// Vertex lighting reads only the lightmap lump's length.
+	if ( r_vertexLight->integer || glConfig.hardwareType == GLHW_PERMEDIA2 ) {
+		l[0] = pspBsp.header.lumps[LUMP_LIGHTMAPS];
+		l[0].fileofs = 0;
+		fileBase = (byte *)&pspBsp.header;
+		R_LoadLightmaps( &l[0] );
+	} else {
+		block[0] = R_PSP_BspReadLumps( l, pspLightmapLumps, 1 );
+		R_LoadLightmaps( &l[0] );
+		R_PSP_BspFreeLumps( block[0] );
+	}
+
+	block[0] = R_PSP_BspReadLumps( l, pspPlaneLumps, 1 );
+	R_LoadPlanes( &l[0] );
+	R_PSP_BspFreeLumps( block[0] );
+
+	// One pass for the rest: l[0-6] to block 0, kept to the end; l[7-12] to block 1, freed after
+	// the surfaces. Brushes and sides are read only when there is a fog to bound.
+	count = pspBsp.header.lumps[LUMP_FOGS].filelen ? 6 : 4;
+	R_PSP_BspPickLumps( l, pspLateLumps, 7 );
+	R_PSP_BspPickLumps( &l[7], pspSurfaceLumps, count );
+	if ( l[6].filelen > PSP_BSP_VIS_HEADER ) {
+		l[6].filelen = PSP_BSP_VIS_HEADER;
+	}
+	R_PSP_BspReadBlocks( l, 7 + count, 7, block );
+	if ( count == 4 ) {
+		Com_Memset( &l[11], 0, 2 * sizeof( lump_t ) );
+	}
+	fileBase = block[1];
+	R_LoadFogs( &l[7], &l[11], &l[12] );
+	R_LoadSurfaces( &l[8], &l[9], &l[10] );
+	R_PSP_BspFreeLumps( block[1] );
+
+	// Leaf surfaces load first because the leafs point into them.
+	fileBase = block[0];
+	R_LoadMarksurfaces( &l[0] );
+	R_LoadNodesAndLeafs( &l[1], &l[2] );
+	R_LoadSubmodels( &l[3] );
+	R_PSP_BspLoadVisibility( &l[6] );
+
+	// The vis fallback moves fileBase. The entities set the light grid size.
+	fileBase = block[0];
+	R_LoadEntities( &l[4] );
+	R_LoadLightGrid( &l[5] );
+	R_PSP_BspFreeLumps( block[0] );
+}
+#endif
+
 /*
 =================
 RE_LoadWorldMap
@@ -1789,12 +2043,14 @@ Called directly from cgame
 =================
 */
 void RE_LoadWorldMap( const char *name ) {
+#ifndef __PSP__
 	int			i;
 	dheader_t	*header;
 	union {
 		byte *b;
 		void *v;
 	} buffer;
+#endif
 	byte		*startMarker;
 
 	if ( tr.worldMapLoaded ) {
@@ -1811,11 +2067,15 @@ void RE_LoadWorldMap( const char *name ) {
 
 	tr.worldMapLoaded = qtrue;
 
+#ifdef __PSP__
+	R_PSP_BspOpen( name );
+#else
 	// load it
     ri.FS_ReadFile( name, &buffer.v );
 	if ( !buffer.b ) {
 		ri.Error (ERR_DROP, "RE_LoadWorldMap: %s not found", name);
 	}
+#endif
 
 	// clear tr.world so if the level fails to load, the next
 	// try will not look at the partially loaded version
@@ -1830,6 +2090,9 @@ void RE_LoadWorldMap( const char *name ) {
 	startMarker = ri.Hunk_Alloc(0, h_low);
 	c_gridVerts = 0;
 
+#ifdef __PSP__
+	R_PSP_BspLoadLumps();
+#else
 	header = (dheader_t *)buffer.b;
 	fileBase = (byte *)header;
 
@@ -1856,16 +2119,20 @@ void RE_LoadWorldMap( const char *name ) {
 	R_LoadVisibility( &header->lumps[LUMP_VISIBILITY] );
 	R_LoadEntities( &header->lumps[LUMP_ENTITIES] );
 	R_LoadLightGrid( &header->lumps[LUMP_LIGHTGRID] );
+#endif
 
 	s_worldData.dataSize = (byte *)ri.Hunk_Alloc(0, h_low) - startMarker;
 
 	// only set tr.world now that we know the entire level has loaded properly
 	tr.world = &s_worldData;
 
-    ri.FS_FreeFile( buffer.v );
-
 #ifdef __PSP__
+	R_PSP_BspClose();
+	ri.Printf( PRINT_ALL, "PSP world: %d KB of world data, lowest hunk free %d KB while loading\n",
+		s_worldData.dataSize / 1024, pspBsp.lowestFree / 1024 );
 	PSP_StaticWorld_Reset();
+#else
+    ri.FS_FreeFile( buffer.v );
 #endif
 }
 

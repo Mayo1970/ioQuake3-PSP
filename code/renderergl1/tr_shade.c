@@ -330,10 +330,18 @@ because a surface may be forced to perform a RB_End due
 to overflow.
 ==============
 */
+#ifdef __PSP__
+// Start of the open batch in sampled frames, for the per-shader profile; 0 when not timing.
+static unsigned int pspBatchStart;
+#endif
+
 void RB_BeginSurface( shader_t *shader, int fogNum ) {
 
 	shader_t *state = (shader->remappedShader) ? shader->remappedShader : shader;
 
+#ifdef __PSP__
+	pspBatchStart = Sys_PSP_RenderProfileBatchBegin();
+#endif
 	tess.numIndexes = 0;
 	tess.numVertexes = 0;
 	PSP_DrawInvalidateBatchCache();
@@ -867,18 +875,8 @@ static void ComputeTexCoords( shaderStage_t *pStage ) {
 	int		b;
 
 #ifdef __PSP__
-	/*
-	 PSP: if this stage's tcMod chain is affine it folds into one GE texture
-	 matrix and none of the per-vertex work below has to run at all - not the
-	 tcMod loops, and not the tcGen copy either, because the array can be
-	 pointed straight at tess.texCoords. See code/psp/psp_tcmod.c. Stages that
-	 are not foldable return qfalse here having touched nothing, and take the
-	 stock path unchanged.
-
-	 The matching PSP_TcModBindArray call is in RB_IterateStagesGeneric, and
-	 has to be: the renderer sets its own texcoord pointer AFTER this function
-	 returns.
-	*/
+	// An affine tcMod chain folds into the texcoord array and skips all per-vertex work (psp_tcmod.c);
+	// PSP_TcModBindArray runs later because the renderer sets its own pointer after this returns.
 	if ( PSP_TcModFold( pStage ) ) {
 		return;
 	}
@@ -1016,11 +1014,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			}
 
 #ifdef __PSP__
-			/*
-			 After both possible qglTexCoordPointer calls - the one above and
-			 the setArraysOnce one in RB_StageIteratorGeneric - because it
-			 replaces them for a folded stage. No-op otherwise.
-			*/
+			// After both qglTexCoordPointer calls, since it replaces them for a folded stage.
 			PSP_TcModBindArray();
 #endif
 
@@ -1390,6 +1384,10 @@ void RB_EndSurface( void ) {
 	// call off to shader specific tess end function
 	//
 	tess.currentStageIteratorFunc();
+#ifdef __PSP__
+	Sys_PSP_RenderProfileBatchEnd( pspBatchStart, tess.shader->name, tess.numVertexes );
+	pspBatchStart = 0;
+#endif
 
 	//
 	// draw debugging stuff

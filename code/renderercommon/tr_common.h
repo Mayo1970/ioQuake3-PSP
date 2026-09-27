@@ -118,6 +118,9 @@ extern	cvar_t	*r_saveFontData;
 qboolean	R_GetModeInfo( int *width, int *height, float *windowAspect, int mode );
 
 float R_NoiseGet4f( float x, float y, float z, double t );
+#ifdef __PSP__
+float R_PSP_NoiseGet4fSplit( float x, float y, float z, int it, float ft );
+#endif
 void  R_NoiseInit( void );
 
 image_t     *R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags );
@@ -144,6 +147,11 @@ IMAGE LOADERS
 
 void R_LoadBMP( const char *name, byte **pic, int *width, int *height );
 void R_LoadJPG( const char *name, byte **pic, int *width, int *height );
+#ifdef __PSP__
+// R_FindImageFile sets the shift (picmip); R_LoadJPG reports whether it decoded that small.
+extern int		r_pspJpegShift;
+extern qboolean	r_pspJpegScaled;
+#endif
 void R_LoadPCX( const char *name, byte **pic, int *width, int *height );
 void R_LoadPNG( const char *name, byte **pic, int *width, int *height );
 void R_LoadPVR( const char *name, byte **pic, int *width, int *height );

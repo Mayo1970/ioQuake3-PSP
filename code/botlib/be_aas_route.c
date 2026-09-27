@@ -1242,7 +1242,12 @@ void AAS_InitRouting(void)
 #endif //ROUTING_DEBUG
 	//
 	routingcachesize = 0;
+#ifdef __PSP__
+	// The cache lives in the zone; q3dm11's 124 portal caches alone would take 2.3 MB.
+	max_routingcachesize = 1024 * (int) LibVarValue("max_routingcache", "1024");
+#else
 	max_routingcachesize = 1024 * (int) LibVarValue("max_routingcache", "4096");
+#endif
 	// read any routing cache if available
 	AAS_ReadRouteCache();
 } //end of the function AAS_InitRouting
@@ -1428,7 +1433,16 @@ aas_routingcache_t *AAS_GetAreaRoutingCache(int clusternum, int areanum, int tra
 		cache->next = clustercache;
 		if (clustercache) clustercache->prev = cache;
 		aasworld.clusterareacache[clusternum][clusterareanum] = cache;
+#ifdef __PSP__
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+
+			AAS_UpdateAreaRoutingCache(cache);
+			Sys_PSP_CountEnd( PSP_COUNT_AAS_AREACACHE, countStart, (unsigned int)cache->size );
+		}
+#else
 		AAS_UpdateAreaRoutingCache(cache);
+#endif
 	} //end if
 	else
 	{
@@ -1440,13 +1454,34 @@ aas_routingcache_t *AAS_GetAreaRoutingCache(int clusternum, int areanum, int tra
 	AAS_LinkCache(cache);
 	return cache;
 } //end of the function AAS_GetAreaRoutingCache
+#ifdef __PSP__
+// Per server frame: AAS_StartFrame only resets it once per bot_thinktime.
+void AAS_PSP_BeginServerFrame(void)
+{
+	aasworld.frameroutingupdates = 0;
+}
+
+// True when the budget is spent and the area cache must be built; the route then waits a frame.
+static qboolean AAS_PSP_AreaCacheOverBudget(int clusternum, int areanum, int travelflags)
+{
+	aas_routingcache_t *cache;
+
+	if (aasworld.frameroutingupdates < PSP_AAS_FRAME_ROUTING_BUILDS) return qfalse;
+	cache = aasworld.clusterareacache[clusternum][AAS_ClusterAreaNum(clusternum, areanum)];
+	for (; cache; cache = cache->next)
+	{
+		if (cache->travelflags == travelflags) return qfalse;
+	}
+	return qtrue;
+}
+#endif
 //===========================================================================
 //
 // Parameter:			-
 // Returns:				-
 // Changes Globals:		-
 //===========================================================================
-void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
+int AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
 {
 	int i, portalnum, clusterareanum, clusternum;
 	unsigned short int t;
@@ -1489,6 +1524,15 @@ void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
 		//
 		cluster = &aasworld.clusters[curupdate->cluster];
 		//
+#ifdef __PSP__
+		// Stop; the caller frees this partial cache. Queued updates must not stay marked inlist.
+		if (AAS_PSP_AreaCacheOverBudget(curupdate->cluster, curupdate->areanum, portalcache->travelflags))
+		{
+			for (; updateliststart; updateliststart = updateliststart->next)
+				updateliststart->inlist = qfalse;
+			return qfalse;
+		}
+#endif
 		cache = AAS_GetAreaRoutingCache(curupdate->cluster,
 								curupdate->areanum, portalcache->travelflags);
 		//take all portals of the cluster
@@ -1537,6 +1581,7 @@ void AAS_UpdatePortalRoutingCache(aas_routingcache_t *portalcache)
 			} //end if
 		} //end for
 	} //end while
+	return qtrue;
 } //end of the function AAS_UpdatePortalRoutingCache
 //===========================================================================
 //
@@ -1568,7 +1613,25 @@ aas_routingcache_t *AAS_GetPortalRoutingCache(int clusternum, int areanum, int t
 		if (aasworld.portalcache[areanum]) aasworld.portalcache[areanum]->prev = cache;
 		aasworld.portalcache[areanum] = cache;
 		//update the cache
+#ifdef __PSP__
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+			int complete = AAS_UpdatePortalRoutingCache(cache);
+
+			Sys_PSP_CountEnd( PSP_COUNT_AAS_PORTALCACHE, countStart, (unsigned int)cache->size );
+			if (!complete)
+			{
+				// Not in the time list yet, so AAS_FreeRoutingCache's unlink would corrupt it.
+				aasworld.portalcache[areanum] = cache->next;
+				if (cache->next) cache->next->prev = NULL;
+				routingcachesize -= cache->size;
+				FreeMemory(cache);
+				return NULL;
+			}
+		}
+#else
 		AAS_UpdatePortalRoutingCache(cache);
+#endif
 	} //end if
 	else
 	{
@@ -1627,7 +1690,17 @@ int AAS_AreaRouteToGoalArea(int areanum, vec3_t origin, int goalareanum, int tra
 	// make sure the routing cache doesn't grow to large
 	while(AvailableMemory() < 1 * 1024 * 1024) {
 		if (!AAS_FreeOldestCache()) break;
+#ifdef __PSP__
+		Sys_PSP_CountEvent( PSP_COUNT_AAS_FREE_MEM );
+#endif
 	}
+#ifdef __PSP__
+	// Upstream never reads max_routingcache; here it caps the cache so the 5 MB zone keeps headroom.
+	while (routingcachesize > max_routingcachesize) {
+		if (!AAS_FreeOldestCache()) break;
+		Sys_PSP_CountEvent( PSP_COUNT_AAS_FREE_CAP );
+	}
+#endif
 	//
 	if (AAS_AreaDoNotEnter(areanum) || AAS_AreaDoNotEnter(goalareanum))
 	{
@@ -1671,6 +1744,13 @@ int AAS_AreaRouteToGoalArea(int areanum, vec3_t origin, int goalareanum, int tra
 	if (clusternum > 0 && goalclusternum > 0 && clusternum == goalclusternum)
 	{
 		//
+#ifdef __PSP__
+		if (AAS_PSP_AreaCacheOverBudget(clusternum, goalareanum, travelflags))
+		{
+			Sys_PSP_CountEvent( PSP_COUNT_AAS_BUDGET );
+			return qfalse;
+		}
+#endif
 		areacache = AAS_GetAreaRoutingCache(clusternum, goalareanum, travelflags);
 		//the number of the area in the cluster
 		clusterareanum = AAS_ClusterAreaNum(clusternum, areanum);
@@ -1706,6 +1786,13 @@ int AAS_AreaRouteToGoalArea(int areanum, vec3_t origin, int goalareanum, int tra
 	} //end if
 	//get the portal routing cache
 	portalcache = AAS_GetPortalRoutingCache(goalclusternum, goalareanum, travelflags);
+#ifdef __PSP__
+	if (!portalcache)
+	{
+		Sys_PSP_CountEvent( PSP_COUNT_AAS_BUDGET );
+		return qfalse;
+	}
+#endif
 	//if the area is a cluster portal, read directly from the portal cache
 	if (clusternum < 0)
 	{
@@ -1728,6 +1815,14 @@ int AAS_AreaRouteToGoalArea(int areanum, vec3_t origin, int goalareanum, int tra
 		//
 		portal = &aasworld.portals[portalnum];
 		//get the cache of the portal area
+#ifdef __PSP__
+		// Not "continue": skipping a portal could return a longer route as the best one.
+		if (AAS_PSP_AreaCacheOverBudget(clusternum, portal->areanum, travelflags))
+		{
+			Sys_PSP_CountEvent( PSP_COUNT_AAS_BUDGET );
+			return qfalse;
+		}
+#endif
 		areacache = AAS_GetAreaRoutingCache(clusternum, portal->areanum, travelflags);
 		//current area inside the current cluster
 		clusterareanum = AAS_ClusterAreaNum(clusternum, areanum);

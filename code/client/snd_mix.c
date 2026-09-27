@@ -23,6 +23,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "client.h"
 #include "snd_local.h"
+#ifdef __PSP__
+#include "../psp/psp_adpcm.h"
+#endif
 
 static portable_samplepair_t paintbuffer[PAINTBUFFER_SIZE];
 int snd_vol;
@@ -555,6 +558,9 @@ void S_PaintChannelFromADPCM( channel_t *ch, sfx_t *sc, int count, int sampleOff
 		i++;
 	}
 
+#ifdef __PSP__
+	samples = (short *)PSP_AdpcmSamples( chunk );
+#else
 	if (i!=sfxScratchIndex || sfxScratchPointer != sc) {
 		S_AdpcmGetSamples( chunk, sfxScratchBuffer );
 		sfxScratchIndex = i;
@@ -562,6 +568,7 @@ void S_PaintChannelFromADPCM( channel_t *ch, sfx_t *sc, int count, int sampleOff
 	}
 
 	samples = sfxScratchBuffer;
+#endif
 
 	for ( i=0 ; i<count ; i++ ) {
 		data  = samples[sampleOffset++];
@@ -570,9 +577,16 @@ void S_PaintChannelFromADPCM( channel_t *ch, sfx_t *sc, int count, int sampleOff
 
 		if (sampleOffset == SND_CHUNK_SIZE*4) {
 			chunk = chunk->next;
+#ifdef __PSP__
+			// A sound ending exactly on a chunk boundary has no next chunk to decode.
+			if ( !chunk )
+				break;
+			samples = (short *)PSP_AdpcmSamples( chunk );
+#else
 			S_AdpcmGetSamples( chunk, sfxScratchBuffer);
-			sampleOffset = 0;
 			sfxScratchIndex++;
+#endif
+			sampleOffset = 0;
 		}
 	}
 }

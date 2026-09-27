@@ -596,6 +596,9 @@ passEntityNum and entities owned by passEntityNum are explicitly not checked.
 void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, const vec3_t end, int passEntityNum, int contentmask, int capsule ) {
 	moveclip_t	clip;
 	int			i;
+#ifdef __PSP__
+	unsigned int	countStart = Sys_PSP_CountBegin();
+#endif
 
 	if ( !mins ) {
 		mins = vec3_origin;
@@ -611,6 +614,9 @@ void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, c
 	clip.trace.entityNum = clip.trace.fraction != 1.0 ? ENTITYNUM_WORLD : ENTITYNUM_NONE;
 	if ( clip.trace.fraction == 0 ) {
 		*results = clip.trace;
+	#ifdef __PSP__
+		Sys_PSP_CountEnd( PSP_COUNT_SV_TRACE, countStart, 0 );
+	#endif
 		return;		// blocked immediately by the world
 	}
 
@@ -641,6 +647,9 @@ void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, c
 	SV_ClipMoveToEntities ( &clip );
 
 	*results = clip.trace;
+#ifdef __PSP__
+	Sys_PSP_CountEnd( PSP_COUNT_SV_TRACE, countStart, 0 );
+#endif
 }
 
 

@@ -34,10 +34,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #ifdef __PSP__
 #include "../psp/psp_pool.h"
+#include "../psp/psp_adpcm.h"
 #define PSP_STRINGIFY_INNER(x) #x
 #define PSP_STRINGIFY(x) PSP_STRINGIFY_INNER(x)
 #ifndef PSP_SOUND_MEGS
-#define PSP_SOUND_MEGS 2
+#define PSP_SOUND_MEGS 1
 #endif
 #define DEF_COMSOUNDMEGS PSP_STRINGIFY(PSP_SOUND_MEGS)
 #else
@@ -64,7 +65,25 @@ short *sfxScratchBuffer = NULL;
 sfx_t *sfxScratchPointer = NULL;
 int	   sfxScratchIndex = 0;
 
+#ifdef __PSP__
+// inUse counts the free chunk bytes, despite its name.
+static int pspSoundLowestFree = 0x7fffffff;
+
+void SND_PSP_FreeMemory( int *freeBytes, int *lowestFree ) {
+	if ( !sfxScratchBuffer ) {
+		*freeBytes = *lowestFree = -1;
+		return;
+	}
+	*freeBytes = inUse;
+	*lowestFree = pspSoundLowestFree < inUse ? pspSoundLowestFree : inUse;
+	pspSoundLowestFree = inUse;
+}
+#endif
+
 void	SND_free(sndBuffer *v) {
+	#ifdef __PSP__
+	PSP_AdpcmForget( v );
+	#endif
 	*(sndBuffer **)v = freelist;
 	freelist = (sndBuffer*)v;
 	inUse += sizeof(sndBuffer);
@@ -86,6 +105,10 @@ redo:
 
 	inUse -= sizeof(sndBuffer);
 	totalInUse += sizeof(sndBuffer);
+	#ifdef __PSP__
+	if ( inUse < pspSoundLowestFree )
+		pspSoundLowestFree = inUse;
+	#endif
 
 	v = freelist;
 	freelist = *(sndBuffer **)freelist;
@@ -165,10 +188,16 @@ void SND_setup(void) {
 		scs, scs * (int)sizeof(sndBuffer), cv->integer,
 		volatileScs, volatileScs * (int)sizeof(sndBuffer) / 1024,
 		heapScs, heapScs * (int)sizeof(sndBuffer) / 1024);
+	#ifdef __PSP__
+	PSP_AdpcmCacheInit();
+	#endif
 }
 
 void SND_shutdown(void)
 {
+		#ifdef __PSP__
+		PSP_AdpcmCacheShutdown();
+		#endif
 		free(sfxScratchBuffer);
 		free(buffer);
 		#ifdef __PSP__

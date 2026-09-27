@@ -1266,9 +1266,18 @@ void R_Init( void ) {
 RE_Shutdown
 ===============
 */
+#ifdef __PSP__
+void R_PSP_BspClose( void );
+#endif
+
 void RE_Shutdown( qboolean destroyWindow ) {	
 
 	ri.Printf( PRINT_ALL, "RE_Shutdown( %i )\n", destroyWindow );
+
+#ifdef __PSP__
+	// Closes the streamed BSP if an ERR_DROP interrupted the world load.
+	R_PSP_BspClose();
+#endif
 
 	ri.Cmd_RemoveCommand( "imagelist" );
 	ri.Cmd_RemoveCommand( "shaderlist" );

@@ -879,6 +879,29 @@ int Z_AvailableMemory( void ) {
 	return Z_AvailableZoneMemory( mainzone );
 }
 
+#ifdef __PSP__
+static int pspZoneLowestFree = 0x7fffffff;
+
+// Main zone free bytes, lowest since the last call and largest free block; -1 before the zone exists.
+void Z_PSP_FreeMemory( int *freeBytes, int *lowestFree, int *largestFree ) {
+	memblock_t	*block;
+
+	if ( !mainzone ) {
+		*freeBytes = *lowestFree = *largestFree = -1;
+		return;
+	}
+	*freeBytes = Z_AvailableZoneMemory( mainzone );
+	*lowestFree = pspZoneLowestFree < *freeBytes ? pspZoneLowestFree : *freeBytes;
+	pspZoneLowestFree = *freeBytes;
+	*largestFree = 0;
+	for ( block = mainzone->blocklist.next; block != &mainzone->blocklist; block = block->next ) {
+		if ( !block->tag && block->size > *largestFree ) {
+			*largestFree = block->size;
+		}
+	}
+}
+#endif
+
 /*
 ========================
 Z_Free
@@ -1056,6 +1079,11 @@ void *Z_TagMalloc( int size, int tag ) {
 	
 	zone->rover = base->next;	// next allocation will start looking here
 	zone->used += base->size;	//
+#ifdef __PSP__
+	if ( zone == mainzone && zone->size - zone->used < pspZoneLowestFree ) {
+		pspZoneLowestFree = zone->size - zone->used;
+	}
+#endif
 	
 	base->id = ZONEID;
 

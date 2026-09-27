@@ -1,21 +1,5 @@
-/*
-===========================================================================
-PSP port - code/sys/sys_psp.c
-
-The sys_unix.c counterpart for the PSP. Implements the full sys_local.h /
-qcommon.h Sys_* platform contract, plus the PSP boot boilerplate
-(PSP_MODULE_INFO, exit-callback thread, clock, Slim detection, volatile
-memory) from DaedalusX64 Source/SysPSP/main.cpp:79-130 (Q3PORT.md 1.3) and
-the mirror's callback thread (Quake3PSP-mirror/unix/unix_main.cpp:83-112,
-Q3PORT.md 1.2).
-
-Deliberately NOT ported from sys_unix.c: the entire XDG home-directory
-migration block (sys_unix.c:123-441), fork/exec dialogs, signal-based
-crash dialogs, mmap. None of that exists in a PSP CFW user-mode context.
-Session 3 replaces the placeholder home/cwd paths with real ms0:/ef0:
-probing derived from argv[0] (Q3PORT.md Session 3).
-===========================================================================
-*/
+// sys_unix.c counterpart: the Sys_* contract plus PSP boot (module info, exit callback, clock,
+// Slim gate) after DaedalusX64 and the mirror. No XDG, fork, signals or mmap exist here.
 
 #include "../qcommon/q_shared.h"
 #include "../qcommon/qcommon.h"
@@ -51,79 +35,27 @@ probing derived from argv[0] (Q3PORT.md Session 3).
 
 PSP_MODULE_INFO( "ioquake3", 0, 1, 0 );                              // attr 0 = user mode
 PSP_MAIN_THREAD_ATTR( PSP_THREAD_ATTR_USER | PSP_THREAD_ATTR_VFPU );  // VFPU or sceGum crashes
-/*
- MUST be an explicit POSITIVE size. Negative values are broken here.
-
- A negative PSP_HEAP_SIZE_KB means "claim all free memory MINUS this much",
- which is a runtime computation. On this toolchain + ARK-4 that computation
- yields a corrupt heap: newlib faults inside malloc_extend_top
- (_mallocr.c:2226) the first time malloc extends the top, storing through a
- wild pointer (observed t1 = 0x03256508; valid PSP user RAM starts at
- 0x08800000). The fault happens during startup, before any output, which is
- why every earlier build showed only a black screen.
-
- Measured on a PSP-2000 / ARK-4 via psplink (diag/psp_heap):
-   no directive -> crash      -4096 -> crash      -8192 -> crash
-   +20480       -> OK, MaxFree 50,324 KB
-   +49152       -> OK, MaxFree 55,641 KB
-
- Note -8192 is exactly what Quake3PSP-mirror/unix/unix_main.cpp:64 uses. It
- works in the mirror's own build (build.mak, PSP_FW_VERSION 500, period GCC)
- and crashes here. This is the one place a mirror value does NOT transfer.
-
- Sizing: the Session 8 run measured the whole user partition at 36 MB heap +
- 2525 KB free + ~12.4 MB module image == ~51 MB. The three budget cvars all
- come out of the heap - com_hunkMegs 24 (calloc, Session 3) + com_zoneMegs 5
-	 + com_soundMegs 2 (~6.2 MB, one unit in volatile memory) == ~32 MB - and so does every texture, which is
- what the remainder is for.
-
- com_soundMegs is NOT megabytes. SND_setup (client/snd_mem.c:82-85) allocates
- cv->integer * 1536 sndBuffers of 2060 bytes each, i.e. ~3.0 MB per unit -
- upstream's default of 8 would be 24 MB on its own. The current launch value is
- 2; one 3.09 MB segment is reserved in the volatile pool and the other stays
- in the normal heap. The pool evicts least-recently-used sounds when it fills
- (SND_malloc ->
- S_FreeOldestSound), so it degrades into reloading, not into failing. The
-	 PSP sound eviction protects a small set of frequent
-	 player sounds before falling back to the ordinary least-recently-used path.
-
- Session 4 retunes this against the measured PRX footprint, and Session 10
- against measured peak hunk usage.
-*/
+// An explicit positive size (psp.cmake sets it). The hunk, zone, heap sound units, vertex
+// arena and texture spill all come out of this one newlib heap.
 #ifndef PSP_HEAP_KB
 #define PSP_HEAP_KB 39936
 #endif
 PSP_HEAP_SIZE_KB( PSP_HEAP_KB );
 
-/*
- Everything in the heap that is NOT the hunk, in MB: zone, sound pool, small
- zone, newlib/stdio, and textures - textures being the open-ended remainder
- (Sys_PSP_BuildBootCommandLine explains the split). A knob because Session 11a
- left both pools starving and the next round decides the boundary from the
- hunk/heap figures Sys_PSP_HeapReport now prints, not from a guess.
-*/
+// Heap MB that is not hunk; Sys_PSP_BuildBootCommandLine sets com_hunkMegs to heap minus this.
 #ifndef PSP_HUNK_RESERVE_MB
-#define PSP_HUNK_RESERVE_MB 15
+#define PSP_HUNK_RESERVE_MB 12
 #endif
 
-/*
- The sound and zone budgets are compile-time knobs so a candidate build can
- change only those pools while keeping PSP_HEAP_KB and PSP_HUNK_RESERVE_MB
- fixed. Test 2 uses sound = 2 and zone = 3.
-*/
+// com_soundMegs is a unit count (1536 sndBuffers, ~3 MB each), not megabytes.
 #ifndef PSP_SOUND_MEGS
-#define PSP_SOUND_MEGS 2
+#define PSP_SOUND_MEGS 1
 #endif
 #ifndef PSP_ZONE_MEGS
 #define PSP_ZONE_MEGS 5
 #endif
 
-/*
- PSPSDK's default main-thread stack is 256 KB. xash3d-fwgs, a PSP port proven
- on hardware, raises it to 512 KB (engine/platform/psp/sys_psp.c:33) and we
- have the same reason to: Sys_ListFiles puts char *list[MAX_FOUND_FILES] ==
- 16 KB on the stack and Sys_ListFilteredFiles recurses per subdirectory.
-*/
+// The 256 KB default is too small: Sys_ListFiles puts a 16 KB list on the stack and recurses.
 PSP_MAIN_THREAD_STACK_SIZE_KB( 512 );
 
 // Last-resort probe candidates, in order. A PSP Go has no ms0: at all, so ef0:
@@ -131,14 +63,7 @@ PSP_MAIN_THREAD_STACK_SIZE_KB( 512 );
 #define PSP_EF0_BASE_PATH "ef0:/PSP/GAME/ioquake3"
 #define PSP_MS0_BASE_PATH "ms0:/PSP/GAME/ioquake3"
 
-/*
-===========================================================================
-Exit callback thread (HOME button)
-
-Without this the firmware's exit dialog hangs the app - Q3PORT.md 5.
-===========================================================================
-*/
-
+// Exit callback thread: without it the HOME button's exit dialog hangs the app.
 static volatile int psp_running = 1;
 
 static int PSP_ExitCallback( int arg1, int arg2, void *common )
@@ -167,28 +92,8 @@ qboolean Sys_PSP_Running( void )
 	return psp_running ? qtrue : qfalse;
 }
 
-/*
-===========================================================================
-Base path resolution
-
-Q3PORT.md 5, "Works via psplink, file not found from XMB": the CWD depends
-on the launcher, so every path must be absolute and derived at boot.
-
-Candidate order:
-  1. dirname(argv[0]), if it carries a device prefix and is a directory.
-     The XMB passes the full EBOOT path; psplink passes host0:/...
-  2. getcwd(). This is what Quake3PSP-mirror uses and it is the only
-     mechanism proven on real hardware for this engine
-     (unix/unix_shared.c:364, unix/unix_main.cpp:524). PSPSDK sets the CWD
-     to the directory the EBOOT was launched from.
-  3. The hardcoded ef0:/ then ms0:/ install paths.
-
-Resolution runs from main() before CON_Init, so nothing can be printed at
-the time. The attempt trace is recorded into a static buffer and dumped by
-Sys_PSP_PrintBootDiagnostics() once the log exists.
-===========================================================================
-*/
-
+// The CWD depends on the launcher, so the base path is absolute: dirname(argv[0]), getcwd()
+// (the mirror's way), then ef0:/ and ms0:/. The trace is kept until the log exists.
 static char psp_basePath[ MAX_OSPATH ];
 static qboolean psp_basePathResolved = qfalse;
 static char psp_bootTrace[ 1024 ];
@@ -208,14 +113,7 @@ static void PSP_TraceAppend( const char *fmt, ... )
 	Q_strcat( psp_bootTrace, sizeof( psp_bootTrace ), text );
 }
 
-/*
-==================
-PSP_IsDirectory
-
-sceIoGetstat rather than stat(): this runs before the engine is up, and it
-reports the PSP error code directly, which is what the trace wants.
-==================
-*/
+// sceIoGetstat, not stat(): it runs before the engine is up and reports the PSP error code.
 static qboolean PSP_IsDirectory( const char *path )
 {
 	SceIoStat st;
@@ -240,14 +138,7 @@ static qboolean PSP_IsDirectory( const char *path )
 	return qtrue;
 }
 
-/*
-==================
-PSP_HasDevicePrefix
-
-"ms0:/..." / "ef0:/..." / "host0:/..." / "disc0:/...". A path without one is
-launcher-relative and useless to us.
-==================
-*/
+// "ms0:/", "ef0:/", "host0:/", "disc0:/". A path without one is launcher-relative and useless.
 static qboolean PSP_HasDevicePrefix( const char *path )
 {
 	const char *colon = strchr( path, ':' );
@@ -257,11 +148,6 @@ static qboolean PSP_HasDevicePrefix( const char *path )
 		colon < strchr( path, '/' ) ) ? qtrue : qfalse;
 }
 
-/*
-==================
-Sys_PSP_ResolveBasePath
-==================
-*/
 char *Sys_PSP_ResolveBasePath( const char *argv0 )
 {
 	char candidate[ MAX_OSPATH ];
@@ -339,25 +225,8 @@ char *Sys_PSP_ResolveBasePath( const char *argv0 )
 	return psp_basePath;
 }
 
-/*
-==================
-Sys_PSP_HeapReport
-
-DIAGNOSTIC - Session 7 map-load failure. See the block comment in
-code/psp/psp_platform.h for why this exists and what it has to decide.
-
-mallinfo() reports the newlib heap, i.e. the PSP_HEAP_SIZE_KB block
-libcglue claimed on the first _sbrk - which is where the hunk, the zone and
-every psp_tex.c texture live. sceKernelMaxFreeMemSize() reports what is
-left OUTSIDE it, which is a different pool and is the Session 4 PRX budget.
-Both are printed because confusing the two is exactly the mistake
-Sys_PSP_BuildBootCommandLine already documents.
-
-The fopen probe is the decisive one: if a plain fopen of the same path
-succeeds right after unzOpen failed, the problem is heap and not the
-Memory Stick or a file-descriptor limit.
-===========================================================================
-*/
+// mallinfo is the newlib heap (hunk, zone, texture spill); sceKernelMaxFreeMemSize is the
+// partition outside it. Both print because confusing the two is the classic sizing mistake.
 void Sys_PSP_HeapReport( const char *where )
 {
 	struct mallinfo	mi = mallinfo();
@@ -372,48 +241,39 @@ void Sys_PSP_HeapReport( const char *where )
 		mi.keepcost / 1024,
 		(int)( sceKernelMaxFreeMemSize() / 1024 ) ) );
 
-	/*
-	 The hunk is calloc'd out of the same heap, so the two numbers have to be
-	 read together: heap pressure is not a hunk shortage and vice versa. It is
-	 reported here because Session 11a's re-budget cannot be decided without
-	 it - the ~8 MB the cgame and ui QVMs used to hold came back as hunk
-	 headroom, and whether that headroom is slack or is being spent by the map
-	 is exactly what Sys_PSP_BuildBootCommandLine's "heapMB - 15" is guessing
-	 at. Hunk_MemoryRemaining is the low+high gap, i.e. what is still
-	 allocatable, and reads 0 before Com_InitHunkMemory.
-	*/
+	// The hunk is calloc'd from the same heap, so read the two together; heap pressure is not
+	// a hunk shortage. Hunk_MemoryRemaining reads 0 before Com_InitHunkMemory.
 	Sys_Print( va( "PSP hunk [%s]: %d KB free of com_hunkMegs %d\n",
 		where ? where : "?",
 		Hunk_MemoryRemaining() / 1024,
 		(int)Cvar_VariableValue( "com_hunkMegs" ) ) );
 
-	/*
-	 File handles are reported alongside the heap because the first Session 7
-	 map load failed on handles while the heap still had room, and the two
-	 numbers were indistinguishable in the log.
-	*/
+	// Lowest values are since the previous report; -1 means the pool does not exist yet.
+	{
+		int	zoneFree, zoneLowest, zoneLargest, soundFree, soundLowest;
+
+		Z_PSP_FreeMemory( &zoneFree, &zoneLowest, &zoneLargest );
+		SND_PSP_FreeMemory( &soundFree, &soundLowest );
+		Sys_Print( va( "PSP zone [%s]: %d KB free, lowest %d KB, largest block %d KB; "
+			"sound %d KB free, lowest %d KB\n",
+			where ? where : "?",
+			zoneFree < 0 ? -1 : zoneFree / 1024,
+			zoneLowest < 0 ? -1 : zoneLowest / 1024,
+			zoneLargest < 0 ? -1 : zoneLargest / 1024,
+			soundFree < 0 ? -1 : soundFree / 1024,
+			soundLowest < 0 ? -1 : soundLowest / 1024 ) );
+	}
+
+	// A map load once failed on file handles with heap to spare, so both are logged together.
 	PSP_VF_ReportInto( vf, sizeof( vf ) );
 	Sys_Print( va( "PSP %s\n", vf ) );
+
+	// File and load counters since the previous report, so each load phase reads on its own.
+	Sys_PSP_CountReport( where ? where : "?", 0 );
 }
 
-/*
-===========================================================================
-Sys_PSP_ScanBss
-
-Measures whether the loader actually zeroed .bss, and if it stopped, where.
-
-Motive: __psp_heap_blockid (libcglue, .sbss) was observed holding 0x08960000
-before the first malloc in the process, when it must be 0. libcglue guards
-its entire heap setup with "if (heap_bottom == NULL)" over a .bss static
-(pspsdk-src/src/libcglue/glue.c:691,697); non-zero garbage there means the
-heap is never created and every malloc returns NULL - exactly what the
-hardware reports.
-
-Must run as the FIRST statement in main(), before anything writes to .bss.
-Results are stashed and printed later, once the log exists.
-==================
-*/
-
+// Measures whether the loader zeroed .bss (libcglue's heap setup depends on it). Must be the
+// first statement in main(); results are printed once the log exists.
 #define PSP_BSS_BUCKETS 16
 
 static int          psp_bssBucketNonZero[ PSP_BSS_BUCKETS ];
@@ -466,77 +326,12 @@ void Sys_PSP_ScanBss( void )
 	psp_bssNonZeroTotal = total;
 }
 
-/*
-===========================================================================
-Native game modules - Sys_LoadDll / Sys_LoadGameDll / Sys_UnloadDll
-
-Session 10. Replaces the interpreted cgame and ui QVMs, which the frame
-breakdown measured at ~40% of a 124 ms frame, with PRX modules of native
-Allegrex code. The QVM interpreter cannot be offloaded or compiled away on
-this platform - there is no MIPS bytecode compiler in ioquake3 (vm_x86,
-vm_powerpc, vm_sparc, vm_armv7l, and no vm_mips) - so going native is the
-only route to that 40%.
-
-How this differs from every other port
---------------------------------------
-Upstream resolves entry points by name with dlsym/GetProcAddress/
-SDL_LoadFunction. The PSP has no such call: a PRX exports by NID and the
-LOADER patches the importer's stub table at module start. So the addresses
-do not come back from this function at all - they are the link-time symbols
-in psp/psp_modules.S, and all this does is load the module, start it, and
-hand back the pair that belongs to the name it was asked for.
-
-That is Quake3PSP-mirror's arrangement (unix/unix_main.cpp:504-620 plus
-unix/moduleAPI.S), and it is the only Quake 3 known to run game modules
-natively on this hardware.
-
-Consequences worth stating, because they are not obvious:
-
-  - The returned "handle" is an index+1 into pspModuleUid, NOT a pointer.
-    vm.c only ever tests it for non-NULL and passes it back to
-    Sys_UnloadDll, so an opaque small integer is fine - but it must never
-    be dereferenced, and 0 must stay reserved for failure.
-  - Adding a module means adding BOTH an exports.exp entry in the module
-    and a STUB_START group in psp_modules.S, with matching library names.
-    A mismatch loads and starts cleanly, then calls into nothing.
-  - PSP_MEMORY_PARTITION_USER: these come out of the partition, NOT the
-    newlib heap. That is the whole point of the memory re-budget in
-    Sys_PSP_BuildBootCommandLine - the ~8 MB of hunk the two QVMs used to
-    occupy is what pays for the partition space these need.
-
-Session 11 - the STATIC route, which is the one that is built
---------------------------------------------------------------
-PSP_NATIVE_GAME_MODULES above is off. Loading an unsigned PRX game module at
-runtime needs the host EBOOT to be a PRX, and a PRX EBOOT with an 8.6 MB .bss
-is refused at load time on this hardware - the two requirements are in direct
-conflict (cmake/platforms/psp.cmake). PSP_STATIC_GAME_MODULES links cgame and
-ui INTO the EBOOT instead, so there is no loader and no conflict.
-
-Everything above about entry points still holds; only the loading disappears.
-The same four symbols are still what gets called, they are just real
-definitions now instead of import stubs the loader has to patch, which means
-they are callable immediately and can never fail to resolve at runtime.
-
-cmake/basegame.cmake explains how the two modules keep their own symbol
-scopes in one link (partial link, then localize everything but the entry
-pair) - that, not the calling, is the work in this route.
-===========================================================================
-*/
+// Native game modules. The built route is PSP_STATIC_GAME_MODULES: cgame, ui and qagame are
+// linked into the EBOOT (a PRX EBOOT with this .bss is refused at load); basegame.cmake explains.
 
 #if defined(PSP_NATIVE_GAME_MODULES) || defined(PSP_STATIC_GAME_MODULES)
-/*
- With PSP_NATIVE_GAME_MODULES: import stubs from psp/psp_modules.S.
- With PSP_STATIC_GAME_MODULES: the renamed entry points of the two blobs
- cmake/basegame.cmake links in (vmMain -> vmMainCG, dllEntry -> dllEntryCG).
- Declared, never defined here either way.
-
- vmMain* must be declared with vmMainProc's exact 13-int signature
- (qcommon/qcommon.h:351), not as varargs: a stub has no C type of its own,
- so the declaration is purely how this file agrees with the caller, and
- varargs versus fixed args is a real ABI difference on MIPS - the first four
- arguments go in registers either way, but the compiler is entitled to lay
- out the rest differently.
-*/
+// Renamed blob entry points (or PRX import stubs). vmMain* needs vmMainProc's exact 13-int
+// signature: varargs and fixed args differ in the MIPS ABI past the fourth argument.
 extern void	dllEntryCG( intptr_t ( QDECL *syscallptr )( intptr_t, ... ) );
 extern intptr_t	QDECL vmMainCG( int callNum, int arg0, int arg1, int arg2,
 			int arg3, int arg4, int arg5, int arg6, int arg7, int arg8,
@@ -548,8 +343,7 @@ extern intptr_t	QDECL vmMainUI( int callNum, int arg0, int arg1, int arg2,
 			int arg9, int arg10, int arg11 );
 
 #ifdef PSP_STATIC_GAME_MODULES
-// qagame is static-only: the PRX build never shipped stubs for it (there is
-// nothing to load a module against in psp_modules.S).
+// qagame is static-only: the PRX build never had stubs for it.
 extern void	dllEntryQAG( intptr_t ( QDECL *syscallptr )( intptr_t, ... ) );
 extern intptr_t	QDECL vmMainQAG( int callNum, int arg0, int arg1, int arg2,
 			int arg3, int arg4, int arg5, int arg6, int arg7, int arg8,
@@ -561,43 +355,8 @@ extern intptr_t	QDECL vmMainQAG( int callNum, int arg0, int arg1, int arg2,
 
 static SceUID	pspModuleUid[ PSP_MAX_GAME_MODULES ];
 
-/*
-==================
-PSP_ModuleEntryPoints
-
-Maps a module name to the stub pair linked for it. Returns qfalse for a name
-this build has no stubs for - which is how qagame currently fails, rather
-than by loading a module nothing can call.
-==================
-*/
-/*
-==================
-PSP_ModuleEntryPoints
-
-Writes into CALLER LOCALS, never into vm_t. Sys_LoadGameDll must not touch
-*entryPoint until the module has actually started, because vm.c keeps going
-after a failed native load:
-
-    vm->dllHandle = Sys_LoadGameDll(filename, &vm->entryPoint, ...);
-    if(vm->dllHandle) { ...; return vm; }
-    Com_Printf("Failed loading dll, trying next\n");     <- falls through
-    ... VM_LoadQVM ...
-
-and VM_Call then dispatches on that same field (qcommon/vm.c:826):
-
-    if ( vm->entryPoint )  r = vm->entryPoint( ... );
-    else                   r = VM_CallInterpreted( ... );
-
-An early write leaves vm->entryPoint pointing at an UNPATCHED import stub,
-so the interpreter is bypassed and every VM_Call returns the stub's error
-code instead. That is the Session 10 hardware failure:
-
-    ERROR: User Interface is version -2147352262, expected 6
-
--2147352262 is 0x8002013A - an unresolved-import stub's return value, not a
-version number. The QVM fallback had loaded correctly and was never called.
-==================
-*/
+// Writes caller locals, never vm_t: an early *entryPoint write survives a failed load and
+// makes VM_Call skip the QVM fallback ("User Interface is version -2147352262").
 static qboolean PSP_ModuleEntryPoints( const char *name,
 	vmMainProc *entryPoint,
 	void ( **dllEntry )( intptr_t ( QDECL * )( intptr_t, ... ) ) )
@@ -620,16 +379,8 @@ static qboolean PSP_ModuleEntryPoints( const char *name,
 }
 #endif // PSP_NATIVE_GAME_MODULES
 
-/*
-==================
-PSP_ModuleBaseName
-
-FS_FindVM hands back a full path - "ms0:/PSP/GAME/ioquake3/baseq3/cgame.prx"
-- but the stub pair is chosen by module name. Recover it by stripping the
-directory and both the extension and the optional ARCH_STRING suffix
-FS_FindVM's dllNameFormats may have added ("cgamemips.prx").
-==================
-*/
+// FS_FindVM gives a full path (".../baseq3/cgamemips.prx"); the entry pair is picked by
+// module name, so strip the directory, extension and ARCH_STRING suffix.
 static void PSP_ModuleBaseName( const char *path, char *out, int outSize )
 {
 	const char	*slash = strrchr( path, '/' );
@@ -697,30 +448,8 @@ void *Sys_LoadGameDll( const char *name,
 
 	Com_Printf( "Sys_LoadGameDll: loading %s\n", name );
 
-	/*
-	 kuKernelLoadModule, NOT sceKernelLoadModule.
-
-	 The plain user-mode loader refuses an unsigned homebrew PRX:
-
-	   Sys_LoadGameDll(.../ui.prx): sceKernelLoadModule failed (0x80020148)
-
-	 0x80020148 is "unsupported PRX type" - the module is unencrypted, and
-	 the user-mode path only accepts signed modules. kubridge's variant runs
-	 the load with kernel privileges and is exactly what CFW provides it
-	 for. Quake3PSP-mirror reaches the same place from the other direction
-	 (unix_main.cpp:537-546): it tries pspSdkLoadStartModule first and falls
-	 back to kuKernelLoadModule when that fails.
-
-	 libpspkubridge is already linked and already proven on this hardware -
-	 kuKernelGetModel is what prints "PSP model 1" in psp_glimp.c - so this
-	 costs no new library and cannot resplit the import stubs (psp.cmake's
-	 "stubs out of order" note).
-
-	 sceKernelLoadModule stays as the fallback rather than the primary: if a
-	 future firmware or a signed build makes it viable, it is the cheaper
-	 path, and trying it second costs one failed call on a path that has
-	 already failed once.
-	*/
+	// The user-mode loader refuses an unsigned PRX (0x80020148); kubridge loads it with kernel
+	// privileges, as the mirror does. sceKernelLoadModule stays as the fallback for signed builds.
 	uid = kuKernelLoadModule( name, 0, NULL );
 	if( uid < 0 )
 	{
@@ -747,15 +476,8 @@ void *Sys_LoadGameDll( const char *name,
 		return NULL;
 	}
 
-	/*
-	 The stubs are patched by the loader during sceKernelStartModule, so
-	 this is the first moment either pointer is safe to call - and dllEntry
-	 must be called before vmMain, because it is what hands the module its
-	 syscall trampoline.
-
-	 Publishing *entryPoint here, after the start succeeded, is what keeps
-	 the QVM fallback usable on every failure path above.
-	*/
+	// The stubs are patched during sceKernelStartModule, so only now are the pointers callable;
+	// publishing *entryPoint this late keeps the QVM fallback usable on every failure above.
 	pspModuleUid[ slot ] = uid;
 	*entryPoint          = moduleMain;
 
@@ -798,39 +520,8 @@ void Sys_UnloadDll( void *dllHandle )
 #endif // PSP_NATIVE_GAME_MODULES
 
 #ifdef PSP_STATIC_GAME_MODULES
-/*
-===========================================================================
-Static module state - the part a static link does NOT give you for free.
-
-vm.c destroys and recreates a VM on every map change, vid_restart and
-fs_restart. A QVM gets a freshly loaded image each time, and a desktop DLL
-gets dlclose + dlopen, so in both cases the module's globals go back to
-their initial values. Linked into the EBOOT they simply persist.
-
-That is not academic. Session 11's hardware run flooded the log with
-
-    R_GetShaderByHandle: out of range hShader '283'
-
-once per drawn frame after a demo -> q3dm1 transition: q3_ui caches shader
-handles in per-menu statics, Menu_Cache (q3_ui/ui_qmenu.c:1745) refreshes
-only the global uis.* set, and RE_Shutdown had meanwhile reset tr.numShaders.
-Handles registered against the previous renderer instance were still being
-drawn. cgame is not affected - CG_Init memsets cgs, cg, cg_entities,
-cg_weapons and cg_items (cgame/cg_main.c:1849-1853) - but "this module
-happens to clear the fields that matter" is not a property to rely on.
-
-So reproduce dlopen semantics instead of patching q3_ui: snapshot each
-module's .data the first time it is used (nothing in it has run yet, so the
-image is pristine), then on every later load restore that snapshot and zero
-.bss. Cheap: cgame is 6.0 KB of .data and 1.45 MB of .bss, ui 7.8 KB and
-570 KB, against a map load measured in tens of seconds.
-
-The section symbols come from cmake/basegame.cmake, which renames each
-blob's .data/.bss to <name>_data/<name>_bss precisely so that ld emits
-__start_/__stop_ for them - it only does that for orphan sections whose
-names are valid C identifiers, which ".data" is not.
-===========================================================================
-*/
+// Linked-in modules keep their globals across VM restarts (q3_ui's stale shader handles), so a
+// .data snapshot and .bss wipe restore dlopen semantics. basegame.cmake names these sections.
 extern char	__start_cgame_data[],  __stop_cgame_data[];
 extern char	__start_cgame_bss[],   __stop_cgame_bss[];
 extern char	__start_ui_data[],     __stop_ui_data[];
@@ -865,21 +556,8 @@ static pspStaticModule_t	pspStaticModules[] =
 #define PSP_NUM_STATIC_MODULES \
 	( (int)( sizeof( pspStaticModules ) / sizeof( pspStaticModules[ 0 ] ) ) )
 
-/*
-==================
-PSP_ModuleResetState
-
-First call per module: keep a copy of .data and leave everything alone -
-the module has never run, so .data is the linked image and .bss is the
-loader's zeroes.
-
-Later calls: put both back the way the first call found them.
-
-If the snapshot cannot be allocated the module still loads. It then behaves
-exactly as it did before this function existed, which is degraded but not
-broken, and the reason is printed rather than guessed at later.
-==================
-*/
+// First call: copy the pristine .data. Later calls: restore it and zero .bss. Without a
+// snapshot the module still loads, with state persisting, and the log says so.
 static void PSP_ModuleResetState( pspStaticModule_t *mod )
 {
 	size_t	dataLen = (size_t)( mod->dataEnd - mod->dataStart );
@@ -911,26 +589,8 @@ static void PSP_ModuleResetState( pspStaticModule_t *mod )
 		mod->name, (unsigned int)dataLen, (unsigned int)( bssLen / 1024 ) );
 }
 
-/*
-==================
-Sys_LoadGameDll - static route
-
-Everything the PRX version does around the two calls is gone: the module is
-part of this binary, so there is nothing to find, load, start or relocate.
-What remains is the contract vm.c expects - reset the module's state, hand
-back the entry point, run dllEntry to give the module its syscall
-trampoline, return a non-NULL handle.
-
-"name" is whatever vm.c passed. VM_Create's PSP branch passes the bare module
-name ("cgame"); PSP_ModuleBaseName also accepts a full path, so a future
-caller coming through FS_FindVM would still resolve.
-
-The failure path matters more than the success path: returning NULL WITHOUT
-having written *entryPoint is what keeps the .qvm in the pk3 usable. See the
-note on PSP_ModuleEntryPoints - an early write bypasses the interpreter and
-turns every VM_Call into a garbage return value.
-==================
-*/
+// Static route: reset state, hand back vmMain, run dllEntry. Failing without writing
+// *entryPoint is what keeps the pk3's .qvm usable as the fallback.
 void *Sys_LoadGameDll( const char *name,
 	vmMainProc *entryPoint,
 	intptr_t ( *systemcalls )( intptr_t, ... ) )
@@ -979,16 +639,7 @@ void *Sys_LoadGameDll( const char *name,
 	return (void *)(intptr_t)( ( mod - pspStaticModules ) + 1 );
 }
 
-/*
-==================
-Sys_UnloadDll - static route
-
-Releases the slot and nothing else; the code stays mapped because it is this
-binary. The state does not have to be cleared here - PSP_ModuleResetState
-does it on the way back in, where the pristine copy is guaranteed to exist
-and a partially torn-down module cannot be left running on zeroed globals.
-==================
-*/
+// Releases the slot only; PSP_ModuleResetState clears the state on the way back in.
 void Sys_UnloadDll( void *dllHandle )
 {
 	int	slot = (int)(intptr_t)dllHandle - 1;
@@ -1006,19 +657,8 @@ void Sys_UnloadDll( void *dllHandle )
 
 #endif // PSP_NATIVE_GAME_MODULES || PSP_STATIC_GAME_MODULES
 
-/*
-===========================================================================
-Sys_PSP_Zone* / Sys_PSP_FrameMark - step 1b frame breakdown.
-
-See the block comment on the declarations in psp/psp_platform.h for why this
-exists and what it decides. Timing source is sceKernelGetSystemTimeLow (us);
-everything here runs on the main thread, so no synchronisation is needed.
-
-A zone that is entered but never left (an early return between Begin and End)
-simply contributes nothing - psp_zoneOpen guards the pairing rather than
-letting a stale start timestamp poison the accumulator with a huge delta.
-===========================================================================
-*/
+// Frame breakdown in microseconds, main thread only. psp_zoneOpen guards the Begin/End pairing,
+// so a zone left by an early return adds nothing instead of a stale huge delta.
 static unsigned int	psp_zoneStart[ PSP_ZONE_COUNT ];
 static int			psp_zoneOpen[ PSP_ZONE_COUNT ];
 static unsigned int	psp_zoneUs[ PSP_ZONE_COUNT ];
@@ -1029,13 +669,8 @@ static unsigned int	psp_frameCount    = 0;
 static unsigned int	psp_frameMaxUs    = 0;
 static unsigned int	psp_frameLastUs   = 0;
 
-/*
- A five-second gameplay window contains at most 300 frames at the LCD's
- 59.94 Hz refresh. A 1 ms histogram records the distribution without a
- sort or allocation at report time, so the profiler cannot leak a sorting
- spike into the next measured frame. It is static 2 KB storage and covers
- frame-time tails through 1.024 seconds instead of clipping p95 at 256 ms.
-*/
+// 1 ms bins up to 1.024 s: percentiles need no sort at report time, so the profiler cannot
+// leak a sorting spike into the next measured frame.
 #define PSP_FRAME_HISTOGRAM_BIN_US 1000
 #define PSP_FRAME_HISTOGRAM_BINS   1024
 static unsigned short psp_frameHistogram[ PSP_FRAME_HISTOGRAM_BINS ];
@@ -1047,22 +682,31 @@ unsigned int Sys_PSP_RenderProfileNow( void )
 }
 
 #ifdef PSP_RENDER_PROFILE
-/*
- The first targeted VFPU investigation needs attribution before code changes.
- sceKernelGetSystemTimeLow is deliberately never called in every draw of every
- frame: profile only one renderer frame in sixteen.  This keeps the benchmark
- build usable while still collecting enough representative draws in a five
- second window.  Individual scopes can nest (MD3 lerp calls normalization), so
- the report labels their shares as independent rather than pretending they
- partition the frame.
-*/
-#define PSP_RPROF_SAMPLE_INTERVAL 16
+// One frame in four is timed: at 1/16 a 5 s fight window held only 3 samples. Scopes can
+// nest (md3Lerp calls normalize), so their shares are independent, not a partition.
+#define PSP_RPROF_SAMPLE_INTERVAL 4
 
 typedef struct {
 	unsigned int start;
 	unsigned int total;
 	unsigned int calls;
 } pspRenderProfileScope_t;
+
+// Shader batches in sampled frames, keyed by the shader name pointer; overflow goes to "other".
+#define PSP_RPROF_SHADER_SLOTS 48
+#define PSP_RPROF_SHADER_TOP   10
+
+typedef struct {
+	const char   *key;
+	char         name[ MAX_QPATH ];
+	unsigned int total;
+	unsigned int batches;
+	unsigned int verts;
+} pspRenderProfileShader_t;
+
+static pspRenderProfileShader_t psp_rprofShader[ PSP_RPROF_SHADER_SLOTS ];
+static pspRenderProfileShader_t psp_rprofShaderOther;
+static unsigned int psp_rprofShaderCount;
 
 static pspRenderProfileScope_t psp_rprof[ PSP_RPROF_COUNT ];
 static unsigned int psp_rprofFrameSerial;
@@ -1091,12 +735,8 @@ static const char * const psp_rprofName[ PSP_RPROF_COUNT ] = {
 };
 #endif
 
-/*
- Goal 22 file-read stall attribution.  The counters cover every operation;
- only events at or above 1 ms enter the bounded slow-event list.  Categories
- are deliberately independent, so a restore-open and its parent restore (or
- a codec stage and its lazy-load parent) are reported as overlapping time.
-*/
+// Counters cover every operation; only events of 1 ms or more enter the slow list.
+// Categories overlap (a restore-open inside its restore), so totals are not additive.
 #define PSP_FILE_TRACE_SLOW_US 1000
 #define PSP_FILE_TRACE_TOP     8
 
@@ -1228,17 +868,8 @@ static void Sys_PSP_FileTraceReport( void )
 #ifdef PSP_STUTTER_TRACE
 char *Sys_PSP_BasePath( void );
 
-/*
-===========================================================================
-Goal 23 - bounded, post-workload file-lookup trace.
-
-The existing PSP_FILE_TRACE counters remain the cheap live summary.  This
-second sink records only complete operations at or above the slow threshold,
-while retaining per-phase/per-frame counters for every operation.  Nothing in
-this block writes to storage until Sys_PSP_StutterTraceDump is called from
-CON_Shutdown, after the measured workload has ended.
-===========================================================================
-*/
+// Goal 23 lookup trace: slow complete operations plus per-phase/per-frame counters. Nothing is
+// written to storage until CON_Shutdown calls Sys_PSP_StutterTraceDump, after the workload.
 #define PSP_STUTTER_SLOW_US       1000
 #define PSP_STUTTER_SLOW_RECORDS  2048
 #define PSP_STUTTER_FRAME_SLOTS   512
@@ -1736,6 +1367,76 @@ void Sys_PSP_RenderProfileCGameSyscallEnd( int callNum, unsigned int start )
 	psp_cgameSyscall[ callNum ].calls++;
 }
 
+unsigned int Sys_PSP_RenderProfileBatchBegin( void )
+{
+	return psp_rprofSampling ? sceKernelGetSystemTimeLow() : 0;
+}
+
+void Sys_PSP_RenderProfileBatchEnd( unsigned int start, const char *shader, int numVertexes )
+{
+	pspRenderProfileShader_t *slot = NULL;
+	unsigned int i;
+
+	if( !start || !psp_rprofSampling || !shader ) {
+		return;
+	}
+
+	for( i = 0; i < psp_rprofShaderCount; i++ ) {
+		if( psp_rprofShader[ i ].key == shader ) {
+			slot = &psp_rprofShader[ i ];
+			break;
+		}
+	}
+
+	if( !slot ) {
+		if( psp_rprofShaderCount < PSP_RPROF_SHADER_SLOTS ) {
+			slot = &psp_rprofShader[ psp_rprofShaderCount++ ];
+			slot->key = shader;
+			Q_strncpyz( slot->name, shader, sizeof( slot->name ) );
+		} else {
+			slot = &psp_rprofShaderOther;
+		}
+	}
+
+	slot->total += sceKernelGetSystemTimeLow() - start;
+	slot->batches++;
+	slot->verts += numVertexes;
+}
+
+// Top batches by time; each includes surface tessellation and the stage draws.
+static void Sys_PSP_RenderProfileShaderReport( void )
+{
+	unsigned int n, i;
+
+	for( n = 0; n < PSP_RPROF_SHADER_TOP; n++ ) {
+		pspRenderProfileShader_t *best = NULL;
+
+		for( i = 0; i < psp_rprofShaderCount; i++ ) {
+			if( psp_rprofShader[ i ].batches &&
+				( !best || psp_rprofShader[ i ].total > best->total ) ) {
+				best = &psp_rprofShader[ i ];
+			}
+		}
+		if( !best ) {
+			break;
+		}
+
+		Com_Printf( "PSP rprof:   shader %u us/sample-frame, %u batches, %u verts: %s\n",
+			best->total / psp_rprofSampledFrames, best->batches, best->verts, best->name );
+		best->batches = 0;
+	}
+
+	if( psp_rprofShaderOther.batches ) {
+		Com_Printf( "PSP rprof:   shader %u us/sample-frame, %u batches, %u verts: (table full)\n",
+			psp_rprofShaderOther.total / psp_rprofSampledFrames,
+			psp_rprofShaderOther.batches, psp_rprofShaderOther.verts );
+	}
+
+	memset( psp_rprofShader, 0, sizeof( psp_rprofShader ) );
+	memset( &psp_rprofShaderOther, 0, sizeof( psp_rprofShaderOther ) );
+	psp_rprofShaderCount = 0;
+}
+
 static void Sys_PSP_RenderProfileReport( unsigned int windowUs, unsigned int frameCount )
 {
 	unsigned int i;
@@ -1744,6 +1445,9 @@ static void Sys_PSP_RenderProfileReport( unsigned int windowUs, unsigned int fra
 	if( !psp_rprofSampledFrames || !frameCount ) {
 		memset( psp_rprof, 0, sizeof( psp_rprof ) );
 		memset( psp_cgameSyscall, 0, sizeof( psp_cgameSyscall ) );
+		memset( psp_rprofShader, 0, sizeof( psp_rprofShader ) );
+		memset( &psp_rprofShaderOther, 0, sizeof( psp_rprofShaderOther ) );
+		psp_rprofShaderCount = 0;
 		psp_rprofSoundAssetCount = 0;
 		psp_rprofSampledFrames = 0;
 		return;
@@ -1775,10 +1479,8 @@ static void Sys_PSP_RenderProfileReport( unsigned int windowUs, unsigned int fra
 			scope->calls );
 	}
 
-	/* soundPaint is a strict subset of sound, sampled under the same frame
-	   decision.  Reporting the difference directly makes the main-CPU A/B
-	   useful without putting begin/end timestamps around every non-paint
-	   fragment of S_Update. */
+	// soundPaint is a strict subset of sound, so the rest is derived without timestamping
+	// every non-paint fragment of S_Update.
 	if( psp_rprof[ PSP_RPROF_SOUND_UPDATE ].calls &&
 		psp_rprof[ PSP_RPROF_SOUND_UPDATE ].total >=
 			psp_rprof[ PSP_RPROF_SOUND_PAINT ].total ) {
@@ -1810,10 +1512,146 @@ static void Sys_PSP_RenderProfileReport( unsigned int windowUs, unsigned int fra
 		Com_Printf( "PSP sound asset sampled: %s\n", psp_rprofSoundAsset[ i ] );
 	}
 
+	Sys_PSP_RenderProfileShaderReport();
+
 	memset( psp_rprof, 0, sizeof( psp_rprof ) );
 	memset( psp_cgameSyscall, 0, sizeof( psp_cgameSyscall ) );
 	psp_rprofSoundAssetCount = 0;
 	psp_rprofSampledFrames = 0;
+}
+#endif
+
+#ifdef PSP_COUNTERS
+typedef struct {
+	unsigned int calls;
+	unsigned int totalUs;
+	unsigned int maxUs;
+	unsigned int value;
+} pspCounter_t;
+
+#define PSP_COUNT_MISS_NAMES 48
+#define PSP_COUNT_MISS_EXTS  12
+
+static pspCounter_t psp_count[ PSP_COUNT_COUNT ];
+static char         psp_countMissName[ PSP_COUNT_MISS_NAMES ][ MAX_QPATH ];
+static unsigned int psp_countMissNames;
+static unsigned int psp_countMissDropped;
+static char         psp_countMissExt[ PSP_COUNT_MISS_EXTS ][ 8 ];
+static unsigned int psp_countMissExtCalls[ PSP_COUNT_MISS_EXTS ];
+static unsigned int psp_countMissExts;
+
+static const char * const psp_countName[ PSP_COUNT_COUNT ] = {
+	"fsLookup", "fsMiss", "fsLoose", "fsLooseSkip", "fsPackOpen", "fsUnzOpen", "fsRead",
+	"imageLoad", "imageCreate", "dxt", "world",
+	"svBots", "svGame", "svSnap", "svTrace",
+	"aasAreaCache", "aasPortalCache", "aasFreeMem", "aasFreeCap",
+	"botChar", "botChat", "botWeight", "aasBudget"
+};
+
+// botlib's routing cache bytes and its PSP cap (be_aas_route.c).
+extern int routingcachesize, max_routingcachesize;
+
+unsigned int Sys_PSP_CountBegin( void )
+{
+	return sceKernelGetSystemTimeLow();
+}
+
+void Sys_PSP_CountEnd( int counter, unsigned int start, unsigned int value )
+{
+	unsigned int us;
+
+	if( counter < 0 || counter >= PSP_COUNT_COUNT )
+		return;
+
+	us = sceKernelGetSystemTimeLow() - start;
+	psp_count[ counter ].calls++;
+	psp_count[ counter ].totalUs += us;
+	psp_count[ counter ].value += value;
+	if( us > psp_count[ counter ].maxUs )
+		psp_count[ counter ].maxUs = us;
+}
+
+void Sys_PSP_CountEvent( int counter )
+{
+	if( counter >= 0 && counter < PSP_COUNT_COUNT )
+		psp_count[ counter ].calls++;
+}
+
+void Sys_PSP_CountMiss( const char *qpath )
+{
+	const char *ext;
+	unsigned int i;
+
+	if( !qpath || !*qpath )
+		return;
+
+	ext = COM_GetExtension( qpath );
+	for( i = 0; i < psp_countMissExts; i++ ) {
+		if( !Q_stricmp( psp_countMissExt[ i ], ext ) )
+			break;
+	}
+	if( i == psp_countMissExts && psp_countMissExts < PSP_COUNT_MISS_EXTS )
+		Q_strncpyz( psp_countMissExt[ psp_countMissExts++ ], ext, sizeof( psp_countMissExt[ 0 ] ) );
+	if( i < psp_countMissExts )
+		psp_countMissExtCalls[ i ]++;
+
+	for( i = 0; i < psp_countMissNames; i++ ) {
+		if( !Q_stricmp( psp_countMissName[ i ], qpath ) )
+			return;
+	}
+	if( psp_countMissNames < PSP_COUNT_MISS_NAMES )
+		Q_strncpyz( psp_countMissName[ psp_countMissNames++ ], qpath, MAX_QPATH );
+	else
+		psp_countMissDropped++;
+}
+
+void Sys_PSP_CountReport( const char *where, unsigned int frameCount )
+{
+	char         line[ 256 ];
+	unsigned int i;
+
+	for( i = 0; i < PSP_COUNT_COUNT; i++ ) {
+		const pspCounter_t *c = &psp_count[ i ];
+
+		if( !c->calls )
+			continue;
+
+		Com_sprintf( line, sizeof( line ), "PSP count [%s]: %-14s %u calls, %u ms, max %u us",
+			where, psp_countName[ i ], c->calls, c->totalUs / 1000, c->maxUs );
+		if( c->value )
+			Q_strcat( line, sizeof( line ), va( ", value %u", c->value ) );
+		if( frameCount )
+			Q_strcat( line, sizeof( line ), va( ", %u us/frame", c->totalUs / frameCount ) );
+		Com_Printf( "%s\n", line );
+	}
+
+	// aasFreeMem fires when zone free drops under 1 MB, aasFreeCap at max_routingcache.
+	if( psp_count[ PSP_COUNT_SV_BOTS ].calls ) {
+		Com_Printf( "PSP count [%s]: routing cache %d KB of %d KB cap, zone %d KB free\n",
+			where, routingcachesize / 1024, max_routingcachesize / 1024,
+			Z_AvailableMemory() / 1024 );
+	}
+
+	if( psp_countMissExts ) {
+		Com_sprintf( line, sizeof( line ), "PSP count [%s]: misses by extension:", where );
+		for( i = 0; i < psp_countMissExts; i++ ) {
+			Q_strcat( line, sizeof( line ), va( " %s %u", psp_countMissExt[ i ][ 0 ] ?
+				psp_countMissExt[ i ] : "(none)", psp_countMissExtCalls[ i ] ) );
+		}
+		Com_Printf( "%s\n", line );
+	}
+	for( i = 0; i < psp_countMissNames; i++ ) {
+		Com_Printf( "PSP miss: %s\n", psp_countMissName[ i ] );
+	}
+	if( psp_countMissDropped ) {
+		Com_Printf( "PSP miss: %u more misses not listed\n", psp_countMissDropped );
+	}
+
+	memset( psp_count, 0, sizeof( psp_count ) );
+	memset( psp_countMissExtCalls, 0, sizeof( psp_countMissExtCalls ) );
+	psp_countMissNames = 0;
+	psp_countMissDropped = 0;
+	psp_countMissExts = 0;
 }
 #endif
 
@@ -1938,15 +1776,8 @@ void Sys_PSP_FrameMark( void )
 			psp_zoneMaxUs[ i ] / 1000 );
 	}
 
-	/*
-	 The number this instrumentation exists for: endFrame minus the two waits
-	 is the CPU building and submitting the frame, and it is what hardware T&L
-	 or a VFPU clipper would attack. If geSync dominates instead, the GE is the
-	 wall and no amount of CPU work helps.
-
-	 Derived rather than measured so that no timestamp lands inside
-	 PSP_DrawElements, which runs hundreds of times per frame.
-	*/
+	// endFrame minus both waits is the CPU building the frame; if geSync dominates, the GE is the
+	// wall instead. Derived, so no timestamp lands inside PSP_DrawElements.
 	{
 		unsigned int waits = psp_zoneUs[ PSP_ZONE_GESYNC ] +
 			psp_zoneUs[ PSP_ZONE_VBLANK ];
@@ -1959,11 +1790,8 @@ void Sys_PSP_FrameMark( void )
 			( cpuGfx * 100 ) / windowUs );
 	}
 
-	// A window spanning a map load accumulates zone time (SCR_UpdateScreen and
-	// CL_CGameRendering both run from inside CL_InitCGame) while almost no
-	// frame closes, so accounted can exceed the window. Unsigned subtraction
-	// would turn that into a ~4 billion ms "other"; report 0 and let the
-	// frame count identify the window as the contaminated one.
+	// Across a map load, zone time can exceed the window; clamp so unsigned subtraction does not
+	// print a ~4 billion ms "other". The frame count marks such a window.
 	if( accounted > windowUs ) {
 		accounted = windowUs;
 	}
@@ -1977,8 +1805,10 @@ void Sys_PSP_FrameMark( void )
 #ifdef PSP_RENDER_PROFILE
 	Sys_PSP_RenderProfileReport( windowUs, psp_frameCount );
 #endif
+	Sys_PSP_CountReport( "window", psp_frameCount );
 	PSP_StaticWorld_Report();
 	Sys_PSP_FileTraceReport();
+	PSP_AdpcmCacheReport();
 
 	for( i = 0; i < PSP_ZONE_COUNT; i++ ) {
 		psp_zoneUs[ i ]    = 0;
@@ -1994,14 +1824,7 @@ void Sys_PSP_FrameMark( void )
 	}
 }
 
-/*
-==================
-Sys_PSP_BasePath
-
-For callers that run after main() resolved it (con_psp.c, the Sys_Default*
-path functions below).
-==================
-*/
+// For callers after main() resolved it (con_psp.c, the Sys_Default* path functions).
 char *Sys_PSP_BasePath( void )
 {
 	if( !psp_basePathResolved )
@@ -2010,15 +1833,7 @@ char *Sys_PSP_BasePath( void )
 	return psp_basePath;
 }
 
-/*
-==================
-Sys_PSP_PrintBootDiagnostics
-
-Called from main() immediately after CON_Init. The XMB/log route is the only
-observation channel this session (Q3PORT.md Session 3), so the path decision
-has to be readable after the fact.
-==================
-*/
+// Called right after CON_Init: the log is the only observation channel from the XMB.
 void Sys_PSP_PrintBootDiagnostics( void )
 {
 	// Build stamp first: a log that does not carry the expected timestamp is a
@@ -2031,17 +1846,8 @@ void Sys_PSP_PrintBootDiagnostics( void )
 		(unsigned int)( sceKernelMaxFreeMemSize() / 1024 ) ) );
 
 #ifdef PSP_BOOT_TRACE
-	/*
-	 Full heap picture, taken before and after the first malloc in the process.
-	 libcglue claims the PSP_HEAP_SIZE_KB block lazily, inside the first _sbrk
-	 (pspsdk-src/src/libcglue/glue.c:688-720), so this is the only moment the
-	 whole mechanism is observable in one place.
-
-	 sce_newlib_heap_kb_size is the "int sce_newlib_heap_kb_size" that
-	 PSP_HEAP_SIZE_KB defines at the top of this file (pspmoduleinfo.h:94-95);
-	 __psp_heap_blockid is libcglue's SceUID for the partition block, 0 until
-	 the first _sbrk and negative if the allocation failed.
-	*/
+	// Heap state around the first malloc: libcglue claims the block lazily in the first _sbrk.
+	// __psp_heap_blockid is 0 before it and negative if the partition allocation failed.
 	{
 		extern int    __psp_heap_blockid;
 		extern char   _end;
@@ -2084,37 +1890,8 @@ void Sys_PSP_PrintBootDiagnostics( void )
 #endif
 }
 
-/*
-===========================================================================
-Sys_PSP_BuildBootCommandLine
-
-Wii pattern (wii_main.c:421,424-478, Q3PORT.md 1.4): measure free memory
-at boot, then inject the starting budget as "+set cvar value" boot
-	 commands rather than hardcoding constants. The launch profile stays
-	 comfortably
-under the 31-line MAX_CONSOLE_LINES cap the Wii port hit twice.
-
-cl_motd 0 is not a budget knob either. CL_RequestMotd (client/cl_main.c:1517)
-resolves UPDATE_SERVER_NAME == update.quake3arena.com, which no longer exists,
-and psp_net.c's resolver blocks the main thread for timeout x retries while it
-fails. Session 9 turned that from a no-op into a real stall.
-
-r_primitives 2 is not a budget knob and is not optional. r_primitives 0
-means "auto", and R_DrawElements (renderergl1/tr_shade.c:168-175) resolves
-auto to 1 - R_DrawStripElements driving qglArrayElement once per vertex -
-whenever qglLockArraysEXT is NULL. There is no compiled-vertex-array
-extension on the GE, so it is NULL permanently, and the Session 5 hardware
-log confirmed the engine was on that path ("rendering primitives: multiple
-glArrayElement"). Immediate mode is a Session 7 no-op in psp_qgl.c, so
-without this line nothing draws at all no matter how correct the texture
-and vertex-array paths are.
-
-The composed launch profile must fit entirely in buf. buf[384] against a
-394-byte string silently dropped the tail, so cl_motd 0 never applied and a
-zero-argument set ran at boot. Both truncation points are now detected, the
-compose one fatally and the append one as a logged warning.
-===========================================================================
-*/
+// Boot budget and launch profile as "+set" commands (Wii pattern). r_primitives 2 is required:
+// auto picks per-vertex qglArrayElement, a no-op here. cl_motd 0 avoids a dead-host DNS stall.
 void Sys_PSP_BuildBootCommandLine( char *cmdline, int size )
 {
 	int  heapMB     = PSP_HEAP_KB / 1024;
@@ -2123,70 +1900,15 @@ void Sys_PSP_BuildBootCommandLine( char *cmdline, int size )
 	int  bufLen;
 	char buf[ MAX_STRING_CHARS ];
 
-	/*
-	 Size the hunk from the HEAP, not from sceKernelMaxFreeMemSize().
-
-	 Com_InitHunkMemory calloc()s the hunk, so it comes out of newlib's heap -
-	 the PSP_HEAP_SIZE_KB block that libcglue claims from the user partition on
-	 the first _sbrk. sceKernelMaxFreeMemSize() reports what is left OUTSIDE
-	 that block, which is a different pool entirely.
-
-	 Sizing off the wrong pool was invisible while the heap was broken (nothing
-	 was ever claimed, so free memory stayed at ~39 MB and the arithmetic looked
-	 sane). The moment the import-stub bug was fixed and the heap was really
-	 taken, free dropped to ~3 MB and com_hunkMegs collapsed to the
-	 MIN_COMHUNKMEGS floor. See Q3PORT.md 5.
-
-	 The reserve is everything in the heap that is NOT the hunk, and textures
-	 are the open-ended part of it: PSP_TexUpload2D memalign()s every mip level
-	 from this same heap (code/psp/psp_tex.c:343), so whatever the reserve does
-	 not spend on the fixed costs becomes the texture budget by default.
-
-	   zone            5.0 MB   com_zoneMegs
-	   sound pool      6.2 MB   com_soundMegs 2; one 3.1 MB segment is volatile
-	   small zone      0.5 MB
-	   newlib/stdio    ~0.5 MB  FILE objects, unzip, libjpeg workspace
-	   textures        the rest (~6 MB at heap 39, hunk 24)
-
-	 15 keeps the hunk at 24 MB across the Session 8 heap increase (36 -> 39),
-	 so the texture budget comes out where Session 7 measured it working rather
-	 than being silently handed to the hunk by the old reserve of 12. Cap at
-	 the mirror's proven Slim value of 27 (Q3PORT.md 1.2).
-
-	 Session 11a made this the port's tightest number: the heap ran completely
-	 dry (arena 36841 KB, used 36804, free 36) and PSP_TexUpload2D started
-	 failing on 256x256 uploads, while cgame reported "Memory is low. Using
-	 deferred model." - which is hunk free below 4 MB (cgame/cg_players.c:1083).
-	 Both pools starving at once means the split is not obviously wrong, it
-	 means the total is short, and moving the boundary blind just swaps which
-	 one fails. Sys_PSP_HeapReport now prints hunk free next to heap free at
-	 every report point; re-tune PSP_HUNK_RESERVE_MB from those two numbers.
-	*/
+	// The hunk is calloc'd from the heap, so size it from PSP_HEAP_KB, never MaxFreeMemSize;
+	// the reserve covers zone, vertex arena, display list, libc and texture spill. 27 is the mirror's cap.
 	hunkMB = heapMB - PSP_HUNK_RESERVE_MB;
 	if( hunkMB > 27 )
 		hunkMB = 27;
 	if( hunkMB < MIN_COMHUNKMEGS )
 		hunkMB = MIN_COMHUNKMEGS;
 
-	/*
-	 vm_cgame / vm_ui 0 == VMI_NATIVE (qcommon/qcommon.h:328). Session 10:
-	 both modules are now PRX files in baseq3/ and the interpreter is a
-	 fallback, not the plan - the frame breakdown put the interpreted cgame
-	 at ~40% of a 124 ms frame, and there is no MIPS bytecode compiler in
-	 ioquake3 to fix that any other way.
-
-	 These are NOT archived cvars, so unlike the r_* settings above they
-	 cannot be overridden by a stale q3config.cfg. If a .prx is missing,
-	 FS_FindVM falls through to the .qvm on its own (files.c:1468-1497) and
-	 the port keeps working - slowly - rather than failing to start.
-
-	 Session 11 (PSP_STATIC_GAME_MODULES) makes them native without a loader;
-	 the fallback is unchanged, because VM_Create's static branch drops into
-	 the ordinary FS_FindVM path whenever Sys_LoadGameDll returns NULL.
-
-	 vm_game joins them in Session 11c. The PRX build never had a qagame stub
-	 group, so it stays at the interpreter there.
-	*/
+	// vm_* 0 is VMI_NATIVE, the linked-in modules; without one, FS_FindVM falls back to the .qvm.
 	bufLen = Com_sprintf( buf, sizeof( buf ),
 		"+set com_hunkMegs %d "
 		"+set com_zoneMegs %d "
@@ -2203,14 +1925,10 @@ void Sys_PSP_BuildBootCommandLine( char *cmdline, int size )
 #endif
 		"+set sv_pure 0 "
 		/* Shipping PSP performance profile. Keep cg_drawfps in autoexec.cfg. */
-		"+set r_picmip 3 "
+		"+set r_picmip 1 "
 		"+set r_subdivisions 80 "
 		"+set r_vertexlight 1 "
-		/*
-		 r_pspNetVblank is a launch cvar rather than an autoexec setting:
-		 network play depends on the display-frame pacing path staying enabled,
-		 and the launch command must win over archived config state.
-		*/
+		/* Network play needs this pacing path, so the launch line must beat archived config. */
 		"+set r_pspNetVblank 1 "
 		/* Keep the performance profile ahead of archived config values. */
 		"+set r_fastsky 1 "
@@ -2230,14 +1948,8 @@ void Sys_PSP_BuildBootCommandLine( char *cmdline, int size )
 			bufLen + 1, (int)sizeof( buf ) );
 	}
 
-	/*
-	 Q_strcat truncates silently (q_shared.c:913-921): it errors only when
-	 cmdline is already over size, never when buf does not fit in what is
-	 left. Unlike the compose check above this is not fatal, because the
-	 room available depends on the argv[0] path the launcher hands us, and
-	 refusing to boot from a deeply nested install directory would be worse
-	 than losing the trailing cvars. It must not be silent, though.
-	*/
+	// Q_strcat truncates silently. Not fatal, since the room depends on the argv[0] path,
+	// but it must be logged: a dropped tail once lost cl_motd 0.
 	{
 		const int used = (int)strlen( cmdline );
 
@@ -2250,26 +1962,15 @@ void Sys_PSP_BuildBootCommandLine( char *cmdline, int size )
 
 	Q_strcat( cmdline, size, buf );
 
-	/*
-	 outsideKB is what remains of the user partition after the heap block was
-	 taken - that, not the heap, is where Session 4's PRX modules get loaded
-	 (sceKernelLoadModule allocates from the partition). If it is too small for
-	 cgame/qagame/ui, lower PSP_HEAP_KB rather than the hunk.
-	*/
+	// outsideKB is the partition left after the heap; net modules load there, so if it runs
+	// short, lower PSP_HEAP_KB rather than the hunk.
 	Sys_Print( va( "PSP: heap %d MB, outside-heap free %d KB (PRX budget), "
 		"chosen hunk %d MB, zone %d MB, sound %d MB\n", heapMB, outsideKB,
 		hunkMB, PSP_ZONE_MEGS, PSP_SOUND_MEGS ) );
 }
 
-/*
-===========================================================================
-Sys_Milliseconds
-
-sys_unix.c's counterpart exports the globals sys_timeBase/curtime; other
-engine code reads them directly. sceRtcGetCurrentTick gives microsecond
-ticks since a fixed epoch - only the delta since the first call matters.
-===========================================================================
-*/
+// Other engine code reads sys_timeBase/curtime directly, as with sys_unix.c.
+// sceRtcGetCurrentTick counts microseconds; only the delta since the first call matters.
 unsigned long sys_timeBase = 0;
 int curtime;
 
@@ -2295,57 +1996,16 @@ int Sys_Milliseconds( void )
 	return curtime;
 }
 
-/*
-===========================================================================
-Sys_PlatformInit
-
-This deliberately matches Quake3PSP-mirror/unix/unix_main.cpp:1079-1141 --
-the only Quake 3 known to boot on real PSP hardware -- and NOT
-DaedalusX64's SysPSP/main.cpp:79-130.
-
-Grepping the whole mirror for kuKernelGetModel / sceKernelVolatileMemLock /
-scePowerLock / sceGeEdramSetSize returns exactly one hit: a declaration at
-unix/m33libs/kubridge.h:94 (there for kuKernelLoadModule, the Sys_LoadDll
-fallback). The mirror calls none of them. Its main() is:
-disable FP exceptions -> setupCallbacks() -> scePowerSetClockFrequency ->
-engine.
-
-The first cut of this file imported Daedalus's init wholesale and froze the
-console hard on a PSP-2000. Daedalus is an emulator that genuinely needs
-partition 5 and 4 MB of VRAM and earns those calls; Session 2 uses neither.
-sceKernelVolatileMemLock in particular is the BLOCKING variant
-(sceKernelVolatileMemTryLock is the non-blocking one) and was called at boot
-and never unlocked.
-
-Each removed call comes back at the session that actually consumes it:
-
-  sceGeEdramSetSize(4MB) + kuKernelGetModel Slim gate
-      -> Session 5, where VRAM is first allocated. Sizing the allocator
-         from sceGeEdramGetSize() is the point of the call; doing it with
-         no allocator is pure risk. DECISION-004's PSP-1000 refusal moves
-         there with it.
-  sceKernelVolatileMemLock + scePowerLock(0)
-      -> Session 6, the texture overflow heap, which is what Daedalus
-         actually uses partition 5 for (VideoMemoryManager.cpp:58-59).
-
-Q3PORT.md Session 2's checklist lists the Slim init and VolatileMemInit
-here; that ordering was wrong and the hardware said so.
-===========================================================================
-*/
+// Matches the mirror's minimal init, not Daedalus's: importing Daedalus's wholesale froze a
+// PSP-2000. The Slim gate, VRAM and volatile memory are set up where they are first used.
 void Sys_PlatformInit( void )
 {
 	int rc;
 
 	PSP_SetupExitCallback();
 
-	/*
-	 The request can be refused (bad combination, power/thermal state, a CFW
-	 plugin holding a clock lock) and the engine would then run the whole
-	 session at 222 MHz with nothing in the log to say so - which reads
-	 exactly like slow code. Read the clock back from the hardware rather
-	 than trusting rc alone: a success code with a wrong clock is the case a
-	 plain rc check misses. Report and continue; a slow boot beats no boot.
-	*/
+	// A refused request would run the session at 222 MHz, which reads like slow code, so the
+	// clock is read back from the hardware and logged. A slow boot beats no boot.
 	rc = scePowerSetClockFrequency( 333, 333, 166 );
 	PSP_TraceAppend( "PSP: clock set rc %08x -> cpu %d MHz, bus %d MHz\n",
 		rc, scePowerGetCpuClockFrequency(), scePowerGetBusClockFrequency() );
@@ -2355,22 +2015,11 @@ void Sys_PlatformInit( void )
 	pspDebugScreenInit();
 }
 
-/*
-===========================================================================
-Sys_PlatformExit
-===========================================================================
-*/
 void Sys_PlatformExit( void )
 {
 }
 
-/*
-===========================================================================
-Sys_GLimpInit / Sys_GLimpSafeInit
-
-NOP, same as sys_unix.c - PSP has no "safe mode" video path.
-===========================================================================
-*/
+// No-ops, as in sys_unix.c: there is no "safe mode" video path.
 void Sys_GLimpSafeInit( void )
 {
 }
@@ -2379,17 +2028,7 @@ void Sys_GLimpInit( void )
 {
 }
 
-/*
-===========================================================================
-Filesystem / path helpers
-
-PSPSDK newlib provides POSIX fopen/opendir/readdir/stat/mkdir/getcwd over
-sceIo (confirmed in use by Quake3PSP-mirror/unix/unix_shared.c and
-unix_main.cpp:524's getcwd() call), so these are straightforward ports of
-the sys_unix.c versions minus the XDG/dialog machinery.
-===========================================================================
-*/
-
+// newlib provides POSIX file calls over sceIo, so these are sys_unix.c's without XDG or dialogs.
 const char *Sys_Basename( char *path )
 {
 	static char base[ MAX_OSPATH ];
@@ -2480,16 +2119,7 @@ FILE *Sys_Mkfifo( const char *ospath )
 	return NULL;
 }
 
-/*
-==================
-Sys_Cwd
-
-Deliberately NOT getcwd(): the CWD is launcher-dependent, and every caller
-of this (Sys_DefaultInstallPath's fallback, FS_Startup) wants the install
-directory. The resolver already tried getcwd as one candidate among
-several.
-==================
-*/
+// Not getcwd(): the CWD depends on the launcher and every caller wants the install directory.
 char *Sys_Cwd( void )
 {
 	return Sys_PSP_BasePath();
@@ -2519,9 +2149,8 @@ char *Sys_MicrosoftStorePath( void )
 	return "";
 }
 
-// One directory for everything: there is no home directory on a PSP, and
-// splitting config/data/state across three would only invent paths the user
-// then has to find.
+// One directory for everything: a PSP has no home directory, and three would only invent
+// paths the user then has to find.
 char *Sys_DefaultHomeConfigPath( void )
 {
 	return Sys_PSP_BasePath();
@@ -2537,11 +2166,6 @@ char *Sys_DefaultHomeStatePath( void )
 	return Sys_PSP_BasePath();
 }
 
-/*
-==================
-Sys_ListFilteredFiles
-==================
-*/
 #define MAX_FOUND_FILES 0x1000
 
 static void Sys_ListFilteredFiles( const char *basedir, char *subdirs, char *filter, char **list, int *numfiles )
@@ -2703,12 +2327,6 @@ void Sys_FreeFileList( char **list )
 
 	Z_Free( list );
 }
-
-/*
-===========================================================================
-Misc
-===========================================================================
-*/
 
 void Sys_Sleep( int msec )
 {

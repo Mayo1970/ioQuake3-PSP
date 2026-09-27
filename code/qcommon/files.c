@@ -249,10 +249,19 @@ typedef struct {
 	fileInPack_t*	buildBuffer;				// buffer with the filenames etc.
 } pack_t;
 
+#ifdef __PSP__
+#define PSP_LOOSE_TOPDIRS	32
+#endif
+
 typedef struct {
 	char		path[MAX_OSPATH];		// c:\quake3
 	char		fullpath[MAX_OSPATH];		// c:\quake3\baseq3
 	char		gamedir[MAX_OSPATH];	// baseq3
+#ifdef __PSP__
+	// Top-level folders of fullpath; each loose check costs ~21 ms, so paths under other folders skip it.
+	int			numTopDirs;		// -1: not known, always check
+	char		topDirs[PSP_LOOSE_TOPDIRS][MAX_QPATH];
+#endif
 } directory_t;
 
 typedef struct searchpath_s {
@@ -427,16 +436,8 @@ static fileHandle_t	FS_HandleForFile(void) {
 }
 
 #ifdef __PSP__
-/*
-=================
-FS_PSP_SharedPakHandleBusy
-
-The shared pak unzFile has one mutable current-file/decompression cursor.
-Only one engine file handle may lease it at a time.  A second shared open
-must use the ordinary unique unzOpen path instead of replacing the first
-handle's cursor underneath it.
-=================
-*/
+// The shared pak unzFile has one current-file cursor, so only one engine handle may lease it;
+// a second shared open must take the unique unzOpen path instead of moving that cursor.
 static qboolean FS_PSP_SharedPakHandleBusy( const pack_t *pak ) {
 	int i;
 
@@ -582,6 +583,73 @@ char *FS_BaseDir_BuildOSPath( const char *base, const char *qpath ) {
 }
 
 
+#ifdef __PSP__
+static void FS_PSP_AddTopDir( directory_t *dir, const char *name, int len )
+{
+	int		i;
+
+	if( dir->numTopDirs < 0 || len <= 0 )
+		return;
+	if( ( name[0] == '.' && len == 1 ) || ( name[0] == '.' && name[1] == '.' && len == 2 ) )
+		return;
+
+	for( i = 0; i < dir->numTopDirs; i++ ) {
+		if( !Q_stricmpn( dir->topDirs[i], name, len ) && !dir->topDirs[i][len] )
+			return;
+	}
+
+	if( dir->numTopDirs >= PSP_LOOSE_TOPDIRS || len >= MAX_QPATH ) {
+		dir->numTopDirs = -1;
+		return;
+	}
+
+	Q_strncpyz( dir->topDirs[dir->numTopDirs], name, len + 1 );
+	dir->numTopDirs++;
+}
+
+// Top-level files (autoexec.cfg, q3config.cfg) always get the loose check.
+static qboolean FS_PSP_LooseMayExist( const directory_t *dir, const char *filename )
+{
+	const char	*sep = strpbrk( filename, "/\\" );
+	int			len, i;
+
+	if( !sep || dir->numTopDirs < 0 )
+		return qtrue;
+
+	len = (int)( sep - filename );
+	for( i = 0; i < dir->numTopDirs; i++ ) {
+		if( !Q_stricmpn( dir->topDirs[i], filename, len ) && !dir->topDirs[i][len] )
+			return qtrue;
+	}
+
+	Sys_PSP_CountEvent( PSP_COUNT_FS_LOOSE_SKIP );
+	return qfalse;
+}
+
+// A folder the game creates under a loose directory must stop its lookups from being skipped.
+static void FS_PSP_NoteCreatedPath( const char *path )
+{
+	searchpath_t	*search;
+
+	for( search = fs_searchpaths; search; search = search->next ) {
+		const char	*rel, *end;
+		int			len;
+
+		if( !search->dir || search->dir->numTopDirs < 0 )
+			continue;
+
+		len = strlen( search->dir->fullpath );
+		if( Q_stricmpn( path, search->dir->fullpath, len ) || path[len] != PATH_SEP )
+			continue;
+
+		rel = path + len + 1;
+		end = strchr( rel, PATH_SEP );
+		if( end )
+			FS_PSP_AddTopDir( search->dir, rel, (int)( end - rel ) );
+	}
+}
+#endif
+
 /*
 ============
 FS_CreatePath
@@ -625,6 +693,9 @@ qboolean FS_CreatePath (const char *OSPath) {
 		}
 	}
 
+#ifdef __PSP__
+	FS_PSP_NoteCreatedPath( path );
+#endif
 	return qfalse;
 }
 
@@ -1142,6 +1213,9 @@ long FS_FOpenFileReadDir(const char *filename, searchpath_t *search, fileHandle_
 	unsigned int	traceStart;
 	int			traceResult;
 #endif
+#ifdef __PSP__
+	unsigned int	packOpenStart;
+#endif
 
 	if(filename == NULL)
 		Com_Error(ERR_FATAL, "FS_FOpenFileRead: NULL 'filename' parameter passed");
@@ -1223,10 +1297,23 @@ long FS_FOpenFileReadDir(const char *filename, searchpath_t *search, fileHandle_
 		}
 		else if(search->dir)
 		{
+		#ifdef __PSP__
+			unsigned int countStart;
+		#endif
 			dir = search->dir;
+		#ifdef __PSP__
+			if( !FS_PSP_LooseMayExist( dir, filename ) )
+				return 0;
+		#endif
 
 			netpath = FS_BuildOSPath(dir->path, dir->gamedir, filename);
+		#ifdef __PSP__
+			countStart = Sys_PSP_CountBegin();
+		#endif
 			filep = Sys_FOpen(netpath, "rb");
+		#ifdef __PSP__
+			Sys_PSP_CountEnd( PSP_COUNT_FS_LOOSE, countStart, filep ? 1 : 0 );
+		#endif
 
 			if(filep)
 			{
@@ -1340,21 +1427,19 @@ long FS_FOpenFileReadDir(const char *filename, searchpath_t *search, fileHandle_
 					if(openUnique)
 					{
 						// open a new file on the pakfile
+#ifdef __PSP__
+						packOpenStart = Sys_PSP_CountBegin();
 						fsh[*file].handleFiles.file.z = unzOpen(pak->pakFilename);
+						Sys_PSP_CountEnd( PSP_COUNT_FS_UNZOPEN, packOpenStart, 0 );
+#else
+						fsh[*file].handleFiles.file.z = unzOpen(pak->pakFilename);
+#endif
 
 						if(fsh[*file].handleFiles.file.z == NULL)
 						{
 #ifdef __PSP__
-							/*
-							 DIAGNOSTIC - Session 7 map-load failure. See the
-							 block comment in code/psp/psp_platform.h.
-
-							 unzOpen returning NULL here means fopen failed
-							 (a Z_Malloc failure would have raised its own
-							 fatal, and the pak parsed fine at FS_Startup).
-							 Print which side is out: the heap, or the file
-							 system.
-							*/
+							// unzOpen NULL here means fopen failed (a Z_Malloc failure is fatal on its own);
+							// print whether the heap or the file system ran out (Session 7 map-load failure).
 							{
 								int	savedErrno = errno;
 								FILE	*probe;
@@ -1391,6 +1476,9 @@ long FS_FOpenFileReadDir(const char *filename, searchpath_t *search, fileHandle_
 
 					Q_strncpyz(fsh[*file].name, filename, sizeof(fsh[*file].name));
 					fsh[*file].zipFile = qtrue;
+					#ifdef __PSP__
+					packOpenStart = Sys_PSP_CountBegin();
+					#endif
 
 					// set the file position in the zip file (also sets the current file info)
 					#ifdef PSP_STUTTER_TRACE
@@ -1434,6 +1522,9 @@ long FS_FOpenFileReadDir(const char *filename, searchpath_t *search, fileHandle_
 					#else
 					unzOpenCurrentFile(fsh[*file].handleFiles.file.z);
 					#endif
+					#ifdef __PSP__
+					Sys_PSP_CountEnd( PSP_COUNT_FS_PACKOPEN, packOpenStart, 0 );
+					#endif
 					fsh[*file].zipFilePos = pakFile->pos;
 					fsh[*file].zipFileLen = pakFile->len;
 
@@ -1476,9 +1567,25 @@ long FS_FOpenFileReadDir(const char *filename, searchpath_t *search, fileHandle_
 		}
 
 		dir = search->dir;
+	#ifdef __PSP__
+		if( !FS_PSP_LooseMayExist( dir, filename ) )
+		{
+			*file = 0;
+			return -1;
+		}
+	#endif
 
 		netpath = FS_BuildOSPath(dir->path, dir->gamedir, filename);
+	#ifdef __PSP__
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+
+			filep = Sys_FOpen(netpath, "rb");
+			Sys_PSP_CountEnd( PSP_COUNT_FS_LOOSE, countStart, filep ? 1 : 0 );
+		}
+	#else
 		filep = Sys_FOpen(netpath, "rb");
+	#endif
 
 		if (filep == NULL)
 		{
@@ -1516,11 +1623,26 @@ Used for streaming data out of either a
 separate file or a ZIP file.
 ===========
 */
+#ifdef __PSP__
+// Whole-lookup time for the load report; a miss also records its qpath.
+static void FS_PSP_CountLookup( unsigned int start, const char *filename, qboolean found )
+{
+	Sys_PSP_CountEnd( PSP_COUNT_FS_LOOKUP, start, 0 );
+	if( !found ) {
+		Sys_PSP_CountEnd( PSP_COUNT_FS_MISS, start, 0 );
+		Sys_PSP_CountMiss( filename );
+	}
+}
+#endif
+
 long FS_FOpenFileRead(const char *filename, fileHandle_t *file, qboolean uniqueFILE)
 {
 	searchpath_t *search;
 	long len;
 	qboolean isLocalConfig;
+#ifdef __PSP__
+	unsigned int countStart = Sys_PSP_CountBegin();
+#endif
 
 	if(!fs_searchpaths)
 		Com_Error(ERR_FATAL, "Filesystem call made without initialization");
@@ -1545,6 +1667,9 @@ long FS_FOpenFileRead(const char *filename, fileHandle_t *file, qboolean uniqueF
 			#ifdef PSP_STUTTER_TRACE
 				Sys_PSP_StutterTraceLookupEnd( (int)len );
 			#endif
+			#ifdef __PSP__
+				FS_PSP_CountLookup( countStart, filename, qtrue );
+			#endif
 				return len;
 			}
 		}
@@ -1555,15 +1680,21 @@ long FS_FOpenFileRead(const char *filename, fileHandle_t *file, qboolean uniqueF
 			#ifdef PSP_STUTTER_TRACE
 				Sys_PSP_StutterTraceLookupEnd( (int)len );
 			#endif
+			#ifdef __PSP__
+				FS_PSP_CountLookup( countStart, filename, qtrue );
+			#endif
 				return len;
 			}
 		}
 
 	}
-	
+
 #ifdef FS_MISSING
 	if(missingFiles)
 		fprintf(missingFiles, "%s\n", filename);
+#endif
+#ifdef __PSP__
+	FS_PSP_CountLookup( countStart, filename, qfalse );
 #endif
 
 	if(file)
@@ -1750,6 +1881,14 @@ int FS_Read( void *buffer, int len, fileHandle_t f ) {
 		Sys_PSP_StutterTraceSetPhase( PSP_STUTTER_PHASE_NONE );
 		Sys_PSP_StutterTraceClearContext();
 		return zipRead;
+#elif defined( __PSP__ )
+		{
+			unsigned int countStart = Sys_PSP_CountBegin();
+			int zipBytes = unzReadCurrentFile(fsh[f].handleFiles.file.z, buffer, len);
+
+			Sys_PSP_CountEnd( PSP_COUNT_FS_READ, countStart, zipBytes > 0 ? (unsigned int)zipBytes : 0 );
+			return zipBytes;
+		}
 #else
 		return unzReadCurrentFile(fsh[f].handleFiles.file.z, buffer, len);
 #endif
@@ -2150,6 +2289,14 @@ void FS_FreeFile( void *buffer ) {
 		Hunk_ClearTempMemory();
 	}
 }
+
+#ifdef __PSP__
+// Temp blocks that do not come from FS_ReadFile must hold the load stack, or the
+// Hunk_ClearTempMemory above frees them under their owner (the streamed BSP lumps).
+void FS_PSP_HoldTempMemory( int delta ) {
+	fs_loadStack += delta;
+}
+#endif
 
 /*
 ============
@@ -3445,6 +3592,9 @@ static void FS_AddGameDirectory( const char *path, const char *dir ) {
 			// add the directory to the search path
 			search = Z_Malloc(sizeof(searchpath_t));
 			search->dir = Z_Malloc(sizeof(*search->dir));
+#ifdef __PSP__
+			search->dir->numTopDirs = -1;
+#endif
 
 			Q_strncpyz(search->dir->path, curpath, sizeof(search->dir->path));	// c:\quake3\baseq3
 			Q_strncpyz(search->dir->fullpath, pakfile, sizeof(search->dir->fullpath));	// c:\quake3\baseq3\mypak.pk3dir
@@ -3459,7 +3609,9 @@ static void FS_AddGameDirectory( const char *path, const char *dir ) {
 
 	// done
 	Sys_FreeFileList( pakfiles );
+#ifndef __PSP__
 	Sys_FreeFileList( pakdirs );
+#endif
 
 	//
 	// add the directory to the search path
@@ -3470,6 +3622,17 @@ static void FS_AddGameDirectory( const char *path, const char *dir ) {
 	Q_strncpyz(search->dir->path, path, sizeof(search->dir->path));
 	Q_strncpyz(search->dir->fullpath, curpath, sizeof(search->dir->fullpath));
 	Q_strncpyz(search->dir->gamedir, dir, sizeof(search->dir->gamedir));
+#ifdef __PSP__
+	// A pure server skips the folder listing, so its loose checks all stay; an empty listing means none.
+	search->dir->numTopDirs = fs_numServerPaks ? -1 : 0;
+	for( pakdirsi = 0; pakdirsi < numdirs; pakdirsi++ )
+		FS_PSP_AddTopDir( search->dir, pakdirs[pakdirsi], strlen( pakdirs[pakdirsi] ) );
+	Sys_FreeFileList( pakdirs );
+	Com_Printf( "PSP loose folders in %s: %d", curpath, search->dir->numTopDirs );
+	for( pakdirsi = 0; pakdirsi < search->dir->numTopDirs; pakdirsi++ )
+		Com_Printf( " %s", search->dir->topDirs[pakdirsi] );
+	Com_Printf( "\n" );
+#endif
 
 	search->next = fs_searchpaths;
 	fs_searchpaths = search;
@@ -4748,7 +4911,12 @@ int		FS_FOpenFileByMode( const char *qpath, fileHandle_t *f, fsMode_t mode ) {
 
 	switch( mode ) {
 		case FS_READ:
+#ifdef __PSP__
+			// A new pk3 handle costs ~34 ms; FS_PSP_SharedPakHandleBusy still opens one when the shared one is leased.
+			r = FS_FOpenFileRead( qpath, f, qfalse );
+#else
 			r = FS_FOpenFileRead( qpath, f, qtrue );
+#endif
 			break;
 		case FS_WRITE:
 			*f = FS_FOpenFileWrite_HomeData( qpath );

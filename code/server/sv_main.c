@@ -1096,7 +1096,16 @@ void SV_Frame( int msec ) {
 
 	sv.timeResidual += msec;
 
+#ifdef __PSP__
+	if (!com_dedicated->integer) {
+		unsigned int countStart = Sys_PSP_CountBegin();
+
+		SV_BotFrame (sv.time + sv.timeResidual);
+		Sys_PSP_CountEnd( PSP_COUNT_SV_BOTS, countStart, 0 );
+	}
+#else
 	if (!com_dedicated->integer) SV_BotFrame (sv.time + sv.timeResidual);
+#endif
 
 	// if time is about to hit the 32nd bit, kick all clients
 	// and clear sv.time, rather
@@ -1143,12 +1152,18 @@ void SV_Frame( int msec ) {
 
 	// run the game simulation in chunks
 	while ( sv.timeResidual >= frameMsec ) {
+	#ifdef __PSP__
+		unsigned int countStart = Sys_PSP_CountBegin();
+	#endif
 		sv.timeResidual -= frameMsec;
 		svs.time += frameMsec;
 		sv.time += frameMsec;
 
 		// let everything in the world think and move
 		VM_Call (gvm, GAME_RUN_FRAME, sv.time);
+	#ifdef __PSP__
+		Sys_PSP_CountEnd( PSP_COUNT_SV_GAME, countStart, 0 );
+	#endif
 	}
 
 	if ( com_speeds->integer ) {
@@ -1159,7 +1174,16 @@ void SV_Frame( int msec ) {
 	SV_CheckTimeouts();
 
 	// send messages back to the clients
+#ifdef __PSP__
+	{
+		unsigned int countStart = Sys_PSP_CountBegin();
+
+		SV_SendClientMessages();
+		Sys_PSP_CountEnd( PSP_COUNT_SV_SNAP, countStart, 0 );
+	}
+#else
 	SV_SendClientMessages();
+#endif
 
 	// send a heartbeat to the master if needed
 	SV_MasterHeartbeat(HEARTBEAT_FOR_MASTER);

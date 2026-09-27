@@ -24,6 +24,11 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "tr_common.h"
 
+#ifdef __PSP__
+int			r_pspJpegShift;
+qboolean	r_pspJpegScaled;
+#endif
+
 /*
  * Include file for users of JPEG library.
  * You will need to have included system headers that define at least
@@ -169,6 +174,14 @@ void R_LoadJPG(const char *filename, unsigned char **pic, int *width, int *heigh
    * automatically convert 8-bit greyscale images to RGB as well.
    */
   cinfo.out_color_space = JCS_RGB;
+#ifdef __PSP__
+  // libjpeg scales while decoding; only exact divisions keep the power-of-two rounding unchanged.
+  if (r_pspJpegShift > 0 && !(cinfo.image_width & ((1 << r_pspJpegShift) - 1)) &&
+      !(cinfo.image_height & ((1 << r_pspJpegShift) - 1))) {
+    cinfo.scale_num = 1;
+    cinfo.scale_denom = 1 << r_pspJpegShift;
+  }
+#endif
 
   /* Step 5: Start decompressor */
 
@@ -238,6 +251,10 @@ void R_LoadJPG(const char *filename, unsigned char **pic, int *width, int *heigh
     buf[--dindex] = buf[--sindex];
   } while(sindex);
 
+#ifdef __PSP__
+  // Set only on success, so a failed JPEG cannot mark another loader's image as scaled.
+  r_pspJpegScaled = cinfo.scale_denom > 1 ? qtrue : qfalse;
+#endif
   *pic = out;
 
   /* Step 7: Finish decompression */
