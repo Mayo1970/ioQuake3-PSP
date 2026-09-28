@@ -22,13 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "tr_common.h"
 
-/*
-========================================================================
-
-TGA files are used for 24/32 bit images
-
-========================================================================
-*/
+// TGA files are used for 24/32 bit images
 
 typedef struct _TargaHeader {
 	unsigned char 	id_length, colormap_type, image_type;
@@ -37,6 +31,58 @@ typedef struct _TargaHeader {
 	unsigned short	x_origin, y_origin, width, height;
 	unsigned char	pixel_size, attributes;
 } TargaHeader;
+
+#ifdef __PSP__
+// With a shift, rows decode into one row buffer and are box-filtered into the 1/2^shift image,
+// so the full-size RGBA buffer never exists (as for JPEG).
+typedef struct {
+	int			shift;
+	int			columns;
+	int			pendingRow;		// row held in rowBuf, -1 if none
+	byte		*rowBuf;
+	unsigned	*sums;			// per output pixel and channel, one output row
+	byte		*out;
+} tgaShrink_t;
+
+static void R_TGAShrinkRow( tgaShrink_t *s ) {
+	int			outWidth = s->columns >> s->shift;
+	const byte	*in = s->rowBuf;
+	int			x, c;
+
+	for ( x = 0; x < s->columns; x++, in += 4 ) {
+		unsigned	*sum = s->sums + ( x >> s->shift ) * 4;
+
+		for ( c = 0; c < 4; c++ ) {
+			sum[c] += in[c];
+		}
+	}
+	// Rows arrive bottom row first, so the group's lowest row index completes an output row.
+	if ( !( s->pendingRow & ( ( 1 << s->shift ) - 1 ) ) ) {
+		byte	*dst = s->out + ( s->pendingRow >> s->shift ) * outWidth * 4;
+
+		for ( x = 0; x < outWidth * 4; x++ ) {
+			dst[x] = (byte)( s->sums[x] >> ( 2 * s->shift ) );
+			s->sums[x] = 0;
+		}
+	}
+}
+
+// The destination for the next row: the full image without a shift, else the row buffer.
+static byte *R_TGARow( tgaShrink_t *s, byte *full, int row ) {
+	if ( !s->shift ) {
+		return full + row * s->columns * 4;
+	}
+	if ( s->pendingRow >= 0 ) {
+		R_TGAShrinkRow( s );
+	}
+	s->pendingRow = row;
+	return s->rowBuf;
+}
+
+#define TGA_ROW( row )	R_TGARow( &shrink, targa_rgba, ( row ) )
+#else
+#define TGA_ROW( row )	( targa_rgba + ( row ) * columns * 4 )
+#endif
 
 void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 {
@@ -52,6 +98,9 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 	TargaHeader	targa_header;
 	byte		*targa_rgba;
 	int length;
+#ifdef __PSP__
+	tgaShrink_t	shrink;
+#endif
 
 	*pic = NULL;
 
@@ -60,9 +109,7 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 	if(height)
 		*height = 0;
 
-	//
 	// load the file
-	//
 	length = ri.FS_ReadFile ( ( char * ) name, &buffer.v);
 	if (!buffer.b || length < 0) {
 		return;
@@ -126,7 +173,27 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 	}
 
 
-	targa_rgba = ri.Malloc (numPixels);
+#ifdef __PSP__
+	// Only exact divisions, so the power-of-two rounding gives the same size as a later picmip.
+	memset( &shrink, 0, sizeof( shrink ) );
+	shrink.columns = columns;
+	shrink.pendingRow = -1;
+	shrink.shift = r_pspImageShift;
+	if ( shrink.shift > 0 && ( ( columns | rows ) & ( ( 1u << shrink.shift ) - 1 ) ) ) {
+		shrink.shift = 0;
+	}
+	if ( shrink.shift > 0 ) {
+		int	outPixels = ( columns >> shrink.shift ) * ( rows >> shrink.shift );
+		int	sumBytes = ( columns >> shrink.shift ) * 4 * sizeof( unsigned );
+
+		shrink.out = R_ImageMalloc( outPixels * 4 );
+		shrink.rowBuf = R_ImageMalloc( columns * 4 );
+		shrink.sums = R_ImageMalloc( sumBytes );
+		memset( shrink.sums, 0, sumBytes );
+		targa_rgba = NULL;
+	} else
+#endif
+	targa_rgba = R_ImageMalloc (numPixels);
 
 	if (targa_header.id_length != 0)
 	{
@@ -146,7 +213,7 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 		// Uncompressed RGB or gray scale image
 		for(row=rows-1; row>=0; row--) 
 		{
-			pixbuf = targa_rgba + row*columns*4;
+			pixbuf = TGA_ROW( row );
 			for(column=0; column<columns; column++) 
 			{
 				unsigned char red,green,blue,alphabyte;
@@ -194,7 +261,7 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 		unsigned char packetHeader, packetSize, j;
 
 		for(row=rows-1; row>=0; row--) {
-			pixbuf = targa_rgba + row*columns*4;
+			pixbuf = TGA_ROW( row );
 			for(column=0; column<columns; ) {
 				if(buf_p + 1 > end)
 					ri.Error (ERR_DROP, "LoadTGA: file truncated (%s)", name);
@@ -233,7 +300,7 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 								row--;
 							else
 								goto breakOut;
-							pixbuf = targa_rgba + row*columns*4;
+							pixbuf = TGA_ROW( row );
 						}
 					}
 				}
@@ -273,7 +340,7 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 								row--;
 							else
 								goto breakOut;
-							pixbuf = targa_rgba + row*columns*4;
+							pixbuf = TGA_ROW( row );
 						}						
 					}
 				}
@@ -282,7 +349,22 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 		}
 	}
 
-#if 0 
+#ifdef __PSP__
+	if ( shrink.shift > 0 ) {
+		// Row 0 comes last and is still in the row buffer.
+		if ( shrink.pendingRow >= 0 ) {
+			R_TGAShrinkRow( &shrink );
+		}
+		R_ImageFree( shrink.rowBuf );
+		R_ImageFree( shrink.sums );
+		targa_rgba = shrink.out;
+		columns >>= shrink.shift;
+		rows >>= shrink.shift;
+		r_pspImageScaled = qtrue;
+	}
+#endif
+
+#if 0
   // TTimo: this is the chunk of code to ensure a behavior that meets TGA specs 
   // bit 5 set => top-down
   if (targa_header.attributes & 0x20) {

@@ -37,6 +37,9 @@ docker run --rm -v "${PWD}:/src" -w /src pspdev/pspdev:latest sh -c `
    cp /tmp/b/RelWithDebInfo/EBOOT.PBP /tmp/b/RelWithDebInfo/ioquake3.elf /src/build-out/"
 ```
 
+Add `-DFLAVOR=oa` to the `psp-cmake` line to build the **OpenArena** flavor (OpenArena 0.8.8
+gamecode, native modules, Ogg music through Tremor). Without it the build is Quake III Arena.
+
 ## Installing on PSP
 
 
@@ -52,6 +55,13 @@ File structure:
 ```
 ms0:/PSP/GAME/ioquake3/EBOOT.PBP
 ms0:/PSP/GAME/ioquake3/baseq3/pak0.pk3 ... pak8.pk3
+```
+
+OpenArena is free: copy the OpenArena 0.8.8 `baseoa` pk3 files instead.
+
+```
+ms0:/PSP/GAME/openarena/EBOOT.PBP
+ms0:/PSP/GAME/openarena/baseoa/pak0.pk3 ... pak6-patch088.pk3
 ```
 
 
@@ -136,6 +146,7 @@ this port boots at. ARK-5's CPU overclock plugin helps this port greatly. Mileag
 - **[PSPSDK](https://github.com/pspdev/pspsdk)** / **[pspdev](https://github.com/pspdev/pspdev)** — the PSP homebrew toolchain and Docker build image.
 - **[Crow_bar's PSPQuake3](https://github.com/Crow-bar/PSPQuake3)** — the first working PSP Quake 3 port; source for the proven control scheme, the pk3 handle-limit workaround, and other hardware-tested reference material used throughout this port's development.
 - **[DaedalusX64](https://github.com/DaedalusX64/daedalus)** — the N64 emulator; reference for modern PSP techniques (VFPU, Media Engine, VRAM/volatile-memory management) consulted throughout this port's development.
+- **[OpenArena](https://openarena.ws/)** — the 0.8.8 gamecode used by the OpenArena flavor.
 
 ---
 

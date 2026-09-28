@@ -23,14 +23,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "server.h"
 
 
-/*
-===============
-SV_SendConfigstring
-
-Creates and sends the server command necessary to update the CS index for the
-given client
-===============
-*/
+// Creates and sends the server command necessary to update the CS index for the
+// given client
 static void SV_SendConfigstring(client_t *client, int index)
 {
 	int maxChunkSize = MAX_STRING_CHARS - 24;
@@ -70,14 +64,8 @@ static void SV_SendConfigstring(client_t *client, int index)
 	}
 }
 
-/*
-===============
-SV_UpdateConfigstrings
-
-Called when a client goes from CS_PRIMED to CS_ACTIVE.  Updates all
-Configstring indexes that have changed while the client was in CS_PRIMED
-===============
-*/
+// Called when a client goes from CS_PRIMED to CS_ACTIVE.  Updates all
+// Configstring indexes that have changed while the client was in CS_PRIMED
 void SV_UpdateConfigstrings(client_t *client)
 {
 	int index;
@@ -97,12 +85,6 @@ void SV_UpdateConfigstrings(client_t *client)
 	}
 }
 
-/*
-===============
-SV_SetConfigstring
-
-===============
-*/
 void SV_SetConfigstring (int index, const char *val) {
 	int		i;
 	client_t	*client;
@@ -145,12 +127,6 @@ void SV_SetConfigstring (int index, const char *val) {
 	}
 }
 
-/*
-===============
-SV_GetConfigstring
-
-===============
-*/
 void SV_GetConfigstring( int index, char *buffer, int bufferSize ) {
 	if ( bufferSize < 1 ) {
 		Com_Error( ERR_DROP, "SV_GetConfigstring: bufferSize == %i", bufferSize );
@@ -167,12 +143,6 @@ void SV_GetConfigstring( int index, char *buffer, int bufferSize ) {
 }
 
 
-/*
-===============
-SV_SetUserinfo
-
-===============
-*/
 void SV_SetUserinfo( int index, const char *val ) {
 	if ( index < 0 || index >= sv_maxclients->integer ) {
 		Com_Error (ERR_DROP, "SV_SetUserinfo: bad index %i", index);
@@ -188,12 +158,6 @@ void SV_SetUserinfo( int index, const char *val ) {
 
 
 
-/*
-===============
-SV_GetUserinfo
-
-===============
-*/
 void SV_GetUserinfo( int index, char *buffer, int bufferSize ) {
 	if ( bufferSize < 1 ) {
 		Com_Error( ERR_DROP, "SV_GetUserinfo: bufferSize == %i", bufferSize );
@@ -205,15 +169,7 @@ void SV_GetUserinfo( int index, char *buffer, int bufferSize ) {
 }
 
 
-/*
-================
-SV_CreateBaseline
-
-Entity baselines are used to compress non-delta messages
-to the clients -- only the fields that differ from the
-baseline will be transmitted
-================
-*/
+// Entity baselines compress non-delta messages: only fields that differ from the baseline are sent.
 static void SV_CreateBaseline( void ) {
 	sharedEntity_t *svent;
 	int				entnum;	
@@ -225,20 +181,12 @@ static void SV_CreateBaseline( void ) {
 		}
 		svent->s.number = entnum;
 
-		//
 		// take current state as baseline
-		//
 		sv.svEntities[entnum].baseline = svent->s;
 	}
 }
 
 
-/*
-===============
-SV_BoundMaxClients
-
-===============
-*/
 static void SV_BoundMaxClients( int minimum ) {
 	// get the current maxclients value
 	Cvar_Get( "sv_maxclients", "8", 0 );
@@ -253,16 +201,8 @@ static void SV_BoundMaxClients( int minimum ) {
 }
 
 
-/*
-===============
-SV_Startup
-
-Called when a host starts a map when it wasn't running
-one before.  Successive map or map_restart commands will
-NOT cause this to be called, unless the game is exited to
-the menu system first.
-===============
-*/
+// Called when a host starts a map with none running; later map or map_restart commands do not
+// call it unless the game went back to the menu first.
 static void SV_Startup( void ) {
 	if ( svs.initialized ) {
 		Com_Error( ERR_FATAL, "SV_Startup: svs.initialized" );
@@ -290,11 +230,6 @@ static void SV_Startup( void ) {
 }
 
 
-/*
-==================
-SV_ChangeMaxClients
-==================
-*/
 void SV_ChangeMaxClients( void ) {
 	int		oldMaxClients;
 	int		i;
@@ -356,11 +291,6 @@ void SV_ChangeMaxClients( void ) {
 	}
 }
 
-/*
-================
-SV_ClearServer
-================
-*/
 static void SV_ClearServer(void) {
 	int i;
 
@@ -372,11 +302,6 @@ static void SV_ClearServer(void) {
 	Com_Memset (&sv, 0, sizeof(sv));
 }
 
-/*
-================
-SV_TouchFile
-================
-*/
 static void SV_TouchFile( const char *filename ) {
 	fileHandle_t	f;
 
@@ -386,15 +311,7 @@ static void SV_TouchFile( const char *filename ) {
 	}
 }
 
-/*
-================
-SV_SpawnServer
-
-Change the server to a new map, taking all connected
-clients along with it.
-This is NOT called for map_restart
-================
-*/
+// Changes the server to a new map, taking all connected clients along; not called for map_restart.
 void SV_SpawnServer( char *server, qboolean killBots ) {
 	int			i;
 	int			checksum;
@@ -501,9 +418,7 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 	// clear physics interaction links
 	SV_ClearWorld ();
 	
-	// media configstring setting should be done during
-	// the loading stage, so connected clients don't have
-	// to load during actual gameplay
+	// Media configstrings are set during loading, so connected clients do not load during gameplay.
 	sv.state = SS_LOADING;
 
 	// load and spawn all other entities
@@ -596,9 +511,8 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 		p = FS_LoadedPakNames();
 		Cvar_Set( "sv_pakNames", p );
 
-		// we need to touch the cgame and ui qvm because they could be in
-		// separate pk3 files and the client will need to download the pk3
-		// files with the latest cgame and ui qvm to pass the pure check
+		// Touch the cgame and ui qvm: they can be in separate pk3s, which clients must download to
+		// pass the pure check.
 		SV_TouchFile( "vm/cgame.qvm" );
 		SV_TouchFile( "vm/ui.qvm" );
 	}
@@ -621,9 +535,7 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 	SV_SetConfigstring( CS_SERVERINFO, Cvar_InfoString( CVAR_SERVERINFO ) );
 	cvar_modifiedFlags &= ~CVAR_SERVERINFO;
 
-	// any media configstring setting now should issue a warning
-	// and any configstring changes should be reliably transmitted
-	// to all clients
+	// From now on media configstrings warn, and configstring changes go reliably to all clients.
 	sv.state = SS_GAME;
 
 	// send a heartbeat now so the master will get up to date info
@@ -642,13 +554,7 @@ void SV_SpawnServer( char *server, qboolean killBots ) {
 	Com_Printf ("-----------------------------------\n");
 }
 
-/*
-===============
-SV_Init
-
-Only called at main exe startup, not for each game
-===============
-*/
+// Only called at main exe startup, not for each game
 void SV_Init (void)
 {
 	int index;
@@ -660,6 +566,9 @@ void SV_Init (void)
 	Cvar_Get ("fraglimit", "20", CVAR_SERVERINFO);
 	Cvar_Get ("timelimit", "0", CVAR_SERVERINFO);
 	sv_gametype = Cvar_Get ("g_gametype", "0", CVAR_SERVERINFO | CVAR_LATCH );
+#ifdef STANDALONEOA
+	sv_dorestart = Cvar_Get ("sv_dorestart", "0", 0);
+#endif
 	Cvar_Get ("sv_keywords", "", CVAR_SERVERINFO);
 	sv_mapname = Cvar_Get ("mapname", "nomap", CVAR_SERVERINFO | CVAR_ROM);
 	sv_privateClients = Cvar_Get ("sv_privateClients", "0", CVAR_SERVERINFO);
@@ -698,8 +607,14 @@ void SV_Init (void)
 	sv_allowDownload = Cvar_Get ("sv_allowDownload", "0", CVAR_SERVERINFO);
 	Cvar_Get ("sv_dlURL", "", CVAR_SERVERINFO | CVAR_ARCHIVE);
 	
+#ifdef STANDALONEOA
+	// Match stock OpenArena: single dpmaster, no Q3 directory.
+	sv_master[0] = Cvar_Get("sv_master1", MASTER_SERVER_NAME, 0);
+	sv_master[1] = Cvar_Get("sv_master2", "", 0);
+#else
 	sv_master[0] = Cvar_Get("sv_master1", MASTER_SERVER_NAME, 0);
 	sv_master[1] = Cvar_Get("sv_master2", "directory.ioquake3.org", 0);
+#endif
 	for(index = 2; index < MAX_MASTER_SERVERS; index++)
 		sv_master[index] = Cvar_Get(va("sv_master%d", index + 1), "", CVAR_ARCHIVE);
 
@@ -725,16 +640,8 @@ void SV_Init (void)
 }
 
 
-/*
-==================
-SV_FinalMessage
-
-Used by SV_Shutdown to send a final message to all
-connected clients before the server goes down.  The messages are sent immediately,
-not just stuck on the outgoing message list, because the server is going
-to totally exit after returning from this function.
-==================
-*/
+// SV_Shutdown sends this final message to all clients at once, not queued, because the server
+// exits right after.
 void SV_FinalMessage( char *message ) {
 	int			i, j;
 	client_t	*cl;
@@ -757,14 +664,8 @@ void SV_FinalMessage( char *message ) {
 }
 
 
-/*
-================
-SV_Shutdown
-
-Called when each game quits,
-before Sys_Quit or Sys_Error
-================
-*/
+// Called when each game quits,
+// before Sys_Quit or Sys_Error
 void SV_Shutdown( char *finalmsg ) {
 	if ( !com_sv_running || !com_sv_running->integer ) {
 		return;

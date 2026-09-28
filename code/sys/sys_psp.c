@@ -16,6 +16,7 @@
 #include <pspsuspend.h>
 #include <kubridge.h>
 #include <psprtc.h>
+#include <psputility_sysparam.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,7 @@
 
 PSP_MODULE_INFO( "ioquake3", 0, 1, 0 );                              // attr 0 = user mode
 PSP_MAIN_THREAD_ATTR( PSP_THREAD_ATTR_USER | PSP_THREAD_ATTR_VFPU );  // VFPU or sceGum crashes
+
 // An explicit positive size (psp.cmake sets it). The hunk, zone, heap sound units, vertex
 // arena and texture spill all come out of this one newlib heap.
 #ifndef PSP_HEAP_KB
@@ -60,8 +62,13 @@ PSP_MAIN_THREAD_STACK_SIZE_KB( 512 );
 
 // Last-resort probe candidates, in order. A PSP Go has no ms0: at all, so ef0:
 // is tried first (on a Go both may exist; ef0: is where the EBOOT lives).
-#define PSP_EF0_BASE_PATH "ef0:/PSP/GAME/ioquake3"
-#define PSP_MS0_BASE_PATH "ms0:/PSP/GAME/ioquake3"
+#ifdef STANDALONEOA
+#define PSP_INSTALL_DIR "openarena"
+#else
+#define PSP_INSTALL_DIR "ioquake3"
+#endif
+#define PSP_EF0_BASE_PATH "ef0:/PSP/GAME/" PSP_INSTALL_DIR
+#define PSP_MS0_BASE_PATH "ms0:/PSP/GAME/" PSP_INSTALL_DIR
 
 // Exit callback thread: without it the HOME button's exit dialog hangs the app.
 static volatile int psp_running = 1;
@@ -2357,9 +2364,50 @@ qboolean Sys_RandomBytes( byte *string, int len )
 	return qtrue;
 }
 
+// XMB nickname made safe for userinfo, or NULL when unset or unreadable.
+static const char *Sys_PSP_Nickname( void )
+{
+	static char nick[MAX_NAME_LENGTH];
+	static qboolean resolved = qfalse;
+
+	if( !resolved ) {
+		char raw[128];
+		int i, n = 0;
+
+		resolved = qtrue;
+		if( sceUtilityGetSystemParamString( PSP_SYSTEMPARAM_ID_STRING_NICKNAME, raw, sizeof( raw ) ) == 0 ) {
+			raw[ sizeof( raw ) - 1 ] = '\0';
+			for( i = 0; raw[ i ] && n < (int)sizeof( nick ) - 1; i++ ) {
+				unsigned char c = (unsigned char)raw[ i ];
+
+				// Drop UTF-8 bytes, controls and the userinfo/command delimiters.
+				if( c < 0x20 || c > 0x7e || c == '\\' || c == '"' || c == ';' )
+					continue;
+				if( c == ' ' && n == 0 )
+					continue;
+				nick[ n++ ] = (char)c;
+			}
+			while( n > 0 && nick[ n - 1 ] == ' ' )
+				n--;
+			nick[ n ] = '\0';
+		}
+	}
+
+	return nick[ 0 ] ? nick : NULL;
+}
+
+const char *Sys_PSP_DefaultPlayerName( void )
+{
+	const char *nick = Sys_PSP_Nickname();
+
+	return nick ? nick : "UnnamedPlayer";
+}
+
 char *Sys_GetCurrentUser( void )
 {
-	return "player";
+	const char *nick = Sys_PSP_Nickname();
+
+	return nick ? (char *)nick : "player";
 }
 
 qboolean Sys_LowPhysicalMemory( void )

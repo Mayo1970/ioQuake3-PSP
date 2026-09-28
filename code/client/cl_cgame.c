@@ -35,30 +35,15 @@ extern qboolean loadCamera(const char *name);
 extern void startCamera(int time);
 extern qboolean getCameraInfo(int time, vec3_t *origin, vec3_t *angles);
 
-/*
-====================
-CL_GetGameState
-====================
-*/
 void CL_GetGameState( gameState_t *gs ) {
 	*gs = cl.gameState;
 }
 
-/*
-====================
-CL_GetGlconfig
-====================
-*/
 void CL_GetGlconfig( glconfig_t *glconfig ) {
 	*glconfig = cls.glconfig;
 }
 
 
-/*
-====================
-CL_GetUserCmd
-====================
-*/
 qboolean CL_GetUserCmd( int cmdNumber, usercmd_t *ucmd ) {
 	// cmds[cmdNumber] is the last properly generated command
 
@@ -83,11 +68,6 @@ int CL_GetCurrentCmdNumber( void ) {
 }
 
 
-/*
-====================
-CL_GetParseEntityState
-====================
-*/
 qboolean	CL_GetParseEntityState( int parseEntityNumber, entityState_t *state ) {
 	// can't return anything that hasn't been parsed yet
 	if ( parseEntityNumber >= cl.parseEntitiesNum ) {
@@ -104,21 +84,11 @@ qboolean	CL_GetParseEntityState( int parseEntityNumber, entityState_t *state ) {
 	return qtrue;
 }
 
-/*
-====================
-CL_GetCurrentSnapshotNumber
-====================
-*/
 void	CL_GetCurrentSnapshotNumber( int *snapshotNumber, int *serverTime ) {
 	*snapshotNumber = cl.snap.messageNum;
 	*serverTime = cl.snap.serverTime;
 }
 
-/*
-====================
-CL_GetSnapshot
-====================
-*/
 qboolean	CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
 	clSnapshot_t	*clSnap;
 	int				i, count;
@@ -167,31 +137,16 @@ qboolean	CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
 	return qtrue;
 }
 
-/*
-=====================
-CL_SetUserCmdValue
-=====================
-*/
 void CL_SetUserCmdValue( int userCmdValue, float sensitivityScale ) {
 	cl.cgameUserCmdValue = userCmdValue;
 	cl.cgameSensitivity = sensitivityScale;
 }
 
-/*
-=====================
-CL_AddCgameCommand
-=====================
-*/
 void CL_AddCgameCommand( const char *cmdName ) {
 	Cmd_AddCommand( cmdName, NULL );
 }
 
 
-/*
-=====================
-CL_ConfigstringModified
-=====================
-*/
 void CL_ConfigstringModified( void ) {
 	char		*old, *s;
 	int			i, index;
@@ -249,13 +204,7 @@ void CL_ConfigstringModified( void ) {
 }
 
 
-/*
-===================
-CL_GetServerCommand
-
-Set up argc/argv for the given command
-===================
-*/
+// Set up argc/argv for the given command
 qboolean CL_GetServerCommand( int serverCommandNumber ) {
 	char	*s;
 	char	*cmd;
@@ -338,15 +287,10 @@ rescan:
 		return qtrue;
 	}
 
-	// the clientLevelShot command is used during development
-	// to generate 128*128 screenshots from the intermission
-	// point of levels for the menu system to use
-	// we pass it along to the cgame to make appropriate adjustments,
-	// but we also clear the console and notify lines here
+	// clientLevelShot makes the 128x128 menu thumbnails from a level's intermission point during
+	// development; cgame adjusts for it, and here the console and notify lines are cleared.
 	if ( !strcmp( cmd, "clientLevelShot" ) ) {
-		// don't do it if we aren't running the server locally,
-		// otherwise malicious remote servers could overwrite
-		// the existing thumbnails
+		// Local server only, or a malicious remote server could overwrite the existing thumbnails.
 		if ( !com_sv_running->integer ) {
 			return qfalse;
 		}
@@ -364,25 +308,13 @@ rescan:
 }
 
 
-/*
-====================
-CL_CM_LoadMap
-
-Just adds default parameters that cgame doesn't need to know about
-====================
-*/
+// Just adds default parameters that cgame doesn't need to know about
 void CL_CM_LoadMap( const char *mapname ) {
 	int		checksum;
 
 	CM_LoadMap( mapname, qtrue, &checksum );
 }
 
-/*
-====================
-CL_ShutdownCGame
-
-====================
-*/
 void CL_ShutdownCGame( void ) {
 	Key_SetCatcher( Key_GetCatcher( ) & ~KEYCATCH_CGAME );
 	cls.cgameStarted = qfalse;
@@ -400,13 +332,7 @@ static int	FloatAsInt( float f ) {
 	return fi.i;
 }
 
-/*
-====================
-CL_CgameSystemCalls
-
-The cgame module is making a system call
-====================
-*/
+// The cgame module is making a system call
 intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 	switch( args[0] ) {
 	case CG_PRINT:
@@ -463,11 +389,8 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		CL_AddReliableCommand(VMA(1), qfalse);
 		return 0;
 	case CG_UPDATESCREEN:
-		// this is used during lengthy level loading, so pump message loop
-//		Com_EventLoop();	// FIXME: if a server restarts here, BAD THINGS HAPPEN!
-// We can't call Com_EventLoop here, a restart will crash and this _does_ happen
-// if there is a map change while we are downloading at pk3.
-// ZOID
+		// Pumps the screen during long level loads. No Com_EventLoop here: a map change during a pk3
+		// download restarts the server inside this call and crashes (ZOID).
 		SCR_UpdateScreen();
 		return 0;
 	case CG_CM_LOADMAP:
@@ -627,7 +550,12 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		Com_Memcpy( VMA(1), VMA(2), args[3] );
 		return 0;
 	case CG_STRNCPY:
+#ifdef STANDALONEOA
+		// OA engine fix: QVMs pass overlapping buffers, which strncpy leaves undefined.
+		Q_strncpy( VMA(1), VMA(2), args[3] );
+#else
 		strncpy( VMA(1), VMA(2), args[3] );
+#endif
 		return args[1];
 	case CG_SIN:
 		return FloatAsInt( sin( VMF(1) ) );
@@ -686,17 +614,6 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		re.RemapShader( VMA(1), VMA(2), VMA(3) );
 		return 0;
 
-/*
-	case CG_LOADCAMERA:
-		return loadCamera(VMA(1));
-
-	case CG_STARTCAMERA:
-		startCamera(args[1]);
-		return 0;
-
-	case CG_GETCAMERAINFO:
-		return getCameraInfo(args[1], VMA(2), VMA(3));
-*/
 	case CG_GET_ENTITY_TOKEN:
 		return re.GetEntityToken( VMA(1), args[2] );
 	case CG_R_INPVS:
@@ -710,13 +627,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 }
 
 
-/*
-====================
-CL_InitCGame
-
-Should only be called by CL_StartHunkUsers
-====================
-*/
+// Should only be called by CL_StartHunkUsers
 void CL_InitCGame( void ) {
 	const char			*info;
 	const char			*mapname;
@@ -739,7 +650,12 @@ void CL_InitCGame( void ) {
 
 	// load the dll or bytecode
 	interpret = Cvar_VariableValue("vm_cgame");
+#if defined(PSP_STATIC_GAME_MODULES) && defined(STANDALONEOA)
+	// The linked-in cgame replaces a stock OA cgame.qvm on pure servers too (Xbox port).
+	if(cl_connectedToPureServer && !(interpret == VMI_NATIVE && FS_PSP_StockVM("cgame")))
+#else
 	if(cl_connectedToPureServer)
+#endif
 	{
 		// if sv_pure is set we only allow qvms to be loaded
 		if(interpret != VMI_COMPILED && interpret != VMI_BYTECODE)
@@ -752,9 +668,8 @@ void CL_InitCGame( void ) {
 	}
 	clc.state = CA_LOADING;
 
-	// init for this gamestate
-	// use the lastExecutedServerCommand instead of the serverCommandSequence
-	// otherwise server commands sent just before a gamestate are dropped
+	// lastExecutedServerCommand, not serverCommandSequence: commands sent just before a gamestate
+	// would otherwise be dropped.
 	VM_Call( cgvm, CG_INIT, clc.serverMessageSequence, clc.lastExecutedServerCommand, clc.clientNum );
 
 	// reset any CVAR_CHEAT cvars registered by cgame
@@ -789,13 +704,7 @@ void CL_InitCGame( void ) {
 }
 
 
-/*
-====================
-CL_GameCommand
-
-See if the current console command is claimed by the cgame
-====================
-*/
+// See if the current console command is claimed by the cgame
 qboolean CL_GameCommand( void ) {
 	if ( !cgvm ) {
 		return qfalse;
@@ -806,11 +715,6 @@ qboolean CL_GameCommand( void ) {
 
 
 
-/*
-=====================
-CL_CGameRendering
-=====================
-*/
 void CL_CGameRendering( stereoFrame_t stereo ) {
 #ifdef __PSP__
 	Sys_PSP_ZoneBegin( PSP_ZONE_CGAME );
@@ -823,25 +727,8 @@ void CL_CGameRendering( stereoFrame_t stereo ) {
 }
 
 
-/*
-=================
-CL_AdjustTimeDelta
-
-Adjust the clients view of server time.
-
-We attempt to have cl.serverTime exactly equal the server's view
-of time plus the timeNudge, but with variable latencies over
-the internet it will often need to drift a bit to match conditions.
-
-Our ideal time would be to have the adjusted time approach, but not pass,
-the very latest snapshot.
-
-Adjustments are only made when a new snapshot arrives with a rational
-latency, which keeps the adjustment process framerate independent and
-prevents massive overadjustment during times of significant packet loss
-or bursted delayed packets.
-=================
-*/
+// Drifts cl.serverTime toward the server's time plus timeNudge, near but never past the newest
+// snapshot. Only new snapshots with sane latency adjust it, so it is framerate independent.
 
 #define	RESET_TIME	500
 
@@ -875,9 +762,8 @@ void CL_AdjustTimeDelta( void ) {
 	} else {
 		// slow drift adjust, only move 1 or 2 msec
 
-		// if any of the frames between this and the previous snapshot
-		// had to be extrapolated, nudge our sense of time back a little
-		// the granularity of +1 / -2 is too high for timescale modified frametimes
+		// Extrapolated frames since the last snapshot nudge time back; the +1/-2 steps are too coarse
+		// for timescale-modified frametimes.
 		if ( com_timescale->value == 0 || com_timescale->value == 1 ) {
 			if ( cl.extrapolatedSnapshot ) {
 				cl.extrapolatedSnapshot = qfalse;
@@ -895,11 +781,6 @@ void CL_AdjustTimeDelta( void ) {
 }
 
 
-/*
-==================
-CL_FirstSnapshot
-==================
-*/
 void CL_FirstSnapshot( void ) {
 	// ignore snapshots that don't have entities
 	if ( cl.snap.snapFlags & SNAPFLAG_NOT_ACTIVE ) {
@@ -913,10 +794,7 @@ void CL_FirstSnapshot( void ) {
 
 	clc.timeDemoBaseTime = cl.snap.serverTime;
 
-	// if this is the first frame of active play,
-	// execute the contents of activeAction now
-	// this is to allow scripting a timedemo to start right
-	// after loading
+	// The first frame of active play runs activeAction, so a timedemo can start right after loading.
 	if ( cl_activeAction->string[0] ) {
 		Cbuf_AddText( cl_activeAction->string );
 		Cvar_Set( "activeAction", "" );
@@ -959,11 +837,6 @@ void CL_FirstSnapshot( void ) {
 #endif
 }
 
-/*
-==================
-CL_SetCGameTime
-==================
-*/
 void CL_SetCGameTime( void ) {
 	// getting a valid frame message ends the connection process
 	if ( clc.state != CA_ACTIVE ) {
@@ -1011,9 +884,7 @@ void CL_SetCGameTime( void ) {
 		// cl_freezeDemo is used to lock a demo in place for single frame advances
 
 	} else {
-		// cl_timeNudge is a user adjustable cvar that allows more
-		// or less latency to be added in the interest of better 
-		// smoothness or better responsiveness.
+		// cl_timeNudge trades added latency for smoothness or responsiveness.
 		int tn;
 		
 		tn = cl_timeNudge->integer;
@@ -1039,9 +910,7 @@ void CL_SetCGameTime( void ) {
 		}
 	}
 
-	// if we have gotten new snapshots, drift serverTimeDelta
-	// don't do this every frame, or a period of packet loss would
-	// make a huge adjustment
+	// Drift serverTimeDelta only on new snapshots, so packet loss cannot cause a huge adjustment.
 	if ( cl.newSnapshots ) {
 		CL_AdjustTimeDelta();
 	}
@@ -1050,14 +919,9 @@ void CL_SetCGameTime( void ) {
 		return;
 	}
 
-	// if we are playing a demo back, we can just keep reading
-	// messages from the demo file until the cgame definitely
-	// has valid snapshots to interpolate between
+	// Demo playback keeps reading messages until cgame has valid snapshots to interpolate.
 
-	// a timedemo will always use a deterministic set of time samples
-	// no matter what speed machine it is run on,
-	// while a normal demo may have different time samples
-	// each time it is played back
+	// A timedemo uses the same time samples on any machine; a normal demo may not.
 	if ( cl_timedemo->integer ) {
 		int now = Sys_Milliseconds( );
 		int frameDuration;

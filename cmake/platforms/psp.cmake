@@ -20,6 +20,11 @@ set(USE_OPENAL_DLOPEN OFF CACHE INTERNAL "")
 set(USE_HTTP OFF CACHE INTERNAL "")
 set(USE_CODEC_VORBIS OFF CACHE INTERNAL "")
 set(USE_CODEC_OPUS OFF CACHE INTERNAL "")
+# OA music is Ogg Vorbis; Q3 ships WAV only. pspdev's Tremor (integer), see snd_codec_ogg.c.
+if(FLAVOR_ID STREQUAL "oa")
+    list(APPEND CLIENT_DEFINITIONS USE_CODEC_VORBIS)
+    list(APPEND CLIENT_LIBRARIES vorbisidec ogg)
+endif()
 set(USE_VOIP OFF CACHE INTERNAL "")
 set(USE_MUMBLE OFF CACHE INTERNAL "")
 set(USE_FREETYPE OFF CACHE INTERNAL "")
@@ -125,11 +130,29 @@ if(PSP_BOOT_TRACE)
     add_compile_definitions(PSP_BOOT_TRACE=1)
 endif()
 
-# PSP_HEAP_KB feeds PSP_HEAP_SIZE_KB; the EBOOT image and net init use what is left outside it.
-# PSP_LOG_GEN numbers the log file, so logs from different EBOOTs cannot be confused.
-if(NOT DEFINED PSP_HEAP_KB)
-    set(PSP_HEAP_KB 35072)
+# Xbox-port memory work: cinematic state only while playing, image decodes heap-first, in-place uploads.
+# ON for every flavor; -DPSP_XBOX_MEMORY=OFF gives the previous hardware-tested layout for A/B runs.
+if(NOT DEFINED PSP_XBOX_MEMORY)
+    set(PSP_XBOX_MEMORY ON)
 endif()
+if(PSP_XBOX_MEMORY)
+    add_compile_definitions(PSP_XBOX_MEMORY)
+endif()
+
+# PSP_HEAP_KB feeds PSP_HEAP_SIZE_KB. The other heaps take their EBOOT image savings against the
+# tested 35072 KB q3 build less 68-100 KB, so the outside-heap PRX budget (1313 KB) keeps a margin.
+if(NOT DEFINED PSP_HEAP_KB)
+    if(FLAVOR_ID STREQUAL "oa" AND PSP_XBOX_MEMORY)
+        set(PSP_HEAP_KB 37440)
+    elseif(FLAVOR_ID STREQUAL "oa")
+        set(PSP_HEAP_KB 34432)
+    elseif(PSP_XBOX_MEMORY)
+        set(PSP_HEAP_KB 38016)
+    else()
+        set(PSP_HEAP_KB 35072)
+    endif()
+endif()
+# PSP_LOG_GEN numbers the log file, so logs from different EBOOTs cannot be confused.
 if(NOT DEFINED PSP_LOG_GEN)
     set(PSP_LOG_GEN 22)
 endif()
@@ -138,10 +161,10 @@ if(NOT DEFINED PSP_PERF_BUILD_ID)
         "Build identity stamped into PSP diagnostic output")
 endif()
 
-# Heap MB that is not hunk (zone, vertex arena, display list, libc, texture spill).
-# 12, not 15: ADPCM sound fits one unit in volatile memory, so its 3 MB heap unit went to the hunk.
+# Heap MB that is not hunk (zone, vertex arena, display list, libc, texture spill). It keeps the
+# tested 22 MB hunk, so a larger heap goes to decodes and spill (12 for the 35072 KB heap).
 if(NOT DEFINED PSP_HUNK_RESERVE_MB)
-    set(PSP_HUNK_RESERVE_MB 12)
+    math(EXPR PSP_HUNK_RESERVE_MB "${PSP_HEAP_KB} / 1024 - 22")
 endif()
 
 # com_soundMegs is a unit count: 1536 sndBuffers, ~3090 KB, reserved in volatile memory.
@@ -213,14 +236,20 @@ list(APPEND COMMON_LIBRARIES
 # MEMSIZE 1 = the 52 MB user partition. ARK 5 treats 2 as Vita-style 24 MB and the heap fails.
 list(APPEND POST_CONFIGURE_FUNCTIONS psp_package)
 
-# No BUILD_PRX: a PRX EBOOT with a large .bss is refused at load (black screen), and nothing
-# here needs the main binary to be a PRX.
+# No BUILD_PRX: a PRX EBOOT with a large .bss is refused at load (black screen). Art comes from
+# graphics/<flavor>/; a flavor without ICON0.png or PIC1.png builds without it.
 function(psp_package)
+    set(PSP_PBP_ART)
+    if(EXISTS "${FLAVOR_GRAPHICS_DIR}/ICON0.png")
+        list(APPEND PSP_PBP_ART ICON_PATH "${FLAVOR_GRAPHICS_DIR}/ICON0.png")
+    endif()
+    if(EXISTS "${FLAVOR_GRAPHICS_DIR}/PIC1.png")
+        list(APPEND PSP_PBP_ART BACKGROUND_PATH "${FLAVOR_GRAPHICS_DIR}/PIC1.png")
+    endif()
     create_pbp_file(
         TARGET ${CLIENT_BINARY}
-        TITLE "ioquake3"
-        ICON_PATH "${CMAKE_SOURCE_DIR}/graphics/q3/ICON0.png"
-        BACKGROUND_PATH "${CMAKE_SOURCE_DIR}/graphics/q3/PIC1.png"
+        TITLE "${FLAVOR_TITLE}"
+        ${PSP_PBP_ART}
         MEMSIZE 1
     )
 endfunction()

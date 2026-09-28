@@ -39,6 +39,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //  #define LEGACY_PROTOCOL	// You probably don't need this for your standalone game
 //  #define PROTOCOL_HANDLER		"foobar"
   #define CONFIG_PREFIX			"fooconfig"
+#elif defined(STANDALONEOA)
+  #define PRODUCT_NAME				"OpenArena"
+  #define BASEGAME					"baseoa"
+  #define CLIENT_WINDOW_TITLE		"OpenArena"
+  #define CLIENT_WINDOW_MIN_TITLE	"oa"
+  #define HOMEPATH_NAME_UNIX_LEGACY	".openarena"
+  #define HOMEPATH_NAME				"OpenArena"
+  #define GAMENAME_FOR_MASTER		"Quake3Arena"
+  #define CINEMATICS_LOGO		"idlogo.roq"
+  #define CINEMATICS_INTRO		"intro.roq"
+  #define LEGACY_PROTOCOL
+  #define CONFIG_PREFIX			"oaconfig"
 #else
   #define PRODUCT_NAME				"ioq3"
   #define BASEGAME					"baseq3"
@@ -91,13 +103,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #pragma warning(disable : 4127)		// conditional expression is constant
 #pragma warning(disable : 4136)
 #pragma warning(disable : 4152)		// nonstandard extension, function/data pointer conversion in expression
-//#pragma warning(disable : 4201)
-//#pragma warning(disable : 4214)
 #pragma warning(disable : 4244)
 #pragma warning(disable : 4142)		// benign redefinition
-//#pragma warning(disable : 4305)		// truncation from const double to float
-//#pragma warning(disable : 4310)		// cast truncates constant value
-//#pragma warning(disable:  4505) 	// unreferenced local function has been removed
 #pragma warning(disable : 4514)
 #pragma warning(disable : 4702)		// unreachable code
 #pragma warning(disable : 4711)		// selected for automatic inline expansion
@@ -138,21 +145,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define Q_EXPORT
 #endif
 
-/**********************************************************************
-  VM Considerations
-
-  The VM can not use the standard system headers because we aren't really
-  using the compiler they were meant for.  We use bg_lib.h which contains
-  prototypes for the functions we define for our own use in bg_lib.c.
-
-  When writing mods, please add needed headers HERE, do not start including
-  stuff like <stdio.h> in the various .c files that make up each of the VMs
-  since you will be including system headers files can will have issues.
-
-  Remember, if you use a C library function that is not defined in bg_lib.c,
-  you will have to add your own version for support in the VM.
-
- **********************************************************************/
+// VM builds cannot use system headers: add needed headers here (bg_lib.h), not in module .c
+// files, and give any C library function missing from bg_lib.c your own version.
 
 #ifdef Q3_VM
 
@@ -175,34 +169,8 @@ typedef int intptr_t;
 #include <stdint.h>
 
 #ifdef __PSP__
-/*
-===========================================================================
-PSP: single-precision math, always.
-
-The Allegrex FPU is single-precision ONLY. Every double operation is a
-software-emulated libgcc call - __muldf3, __adddf3, __divdf3 - costing tens
-of cycles where the hardware does a float in one. Quake 3 calls the C
-library's DOUBLE entry points everywhere (sin, cos, sqrt, fabs, atan2), and
-each one also drags in __extendsfdf2 on the way in and __truncdfsf2 on the
-way out, because the arguments and results are floats.
-
-Measured in the Session 11d binary with psp-objdump: 4307 soft-float call
-sites, concentrated exactly where a frame cannot afford them -
-
-    AngleVectors 72, BG_EvaluateTrajectory 54, PmoveSingle 50,
-    CG_DrawActive 52, CG_AddParticleToScene 51, CG_AddLocalEntities 47,
-    CG_AddViewWeapon 41, BotAimAtEnemy 71, AAS_* 45-83
-
-- i.e. per-entity, per-frame code in cgame, the renderer and the bots.
-
-Remapping here rather than in code/psp/psp_platform.h is deliberate: this
-header is included by the engine, the renderer and all three game modules,
-and by NOTHING in code/thirdparty. libjpeg and zlib keep their own math.
-
-Function-like macros, so the f-suffixed names are untouched (fabsf does not
-match fabs) and taking the address of a real double function still works.
-===========================================================================
-*/
+// The Allegrex FPU is single-precision only: double math is soft-float libgcc calls in per-frame
+// code. Macros, so f-suffixed names and &double_fn still work; thirdparty keeps its own math.
 #define sin( x )	sinf( x )
 #define cos( x )	cosf( x )
 #define tan( x )	tanf( x )
@@ -311,9 +279,7 @@ typedef enum {
 } cbufExec_t;
 
 
-//
 // these aren't needed by any of the VMs.  put in another header?
-//
 #define	MAX_MAP_AREA_BYTES		32		// bit vector of area visibility
 
 
@@ -388,13 +354,7 @@ void *Hunk_Alloc( int size, ha_pref preference );
 #define CIN_silent	8
 #define CIN_shader	16
 
-/*
-==============================================================
-
-MATHLIB
-
-==============================================================
-*/
+// MATHLIB
 
 
 typedef float vec_t;
@@ -456,7 +416,15 @@ qboolean Q_IsColorString(const char *p);  // ^[0-9a-zA-Z]
 #define COLOR_CYAN	'5'
 #define COLOR_MAGENTA	'6'
 #define COLOR_WHITE	'7'
+#ifdef STANDALONEOA
+// OA adds ^8 (orange), as in the OpenArena engine.
+#define NUMBER_OF_COLORS 9
+#define COLOR_MENU	'8'
+#define ColorIndexForNumber(c) ((c) % NUMBER_OF_COLORS)
+#else
+#define NUMBER_OF_COLORS 8
 #define ColorIndexForNumber(c) ((c) & 0x07)
+#endif
 #define ColorIndex(c) (ColorIndexForNumber((c) - '0'))
 
 #define S_COLOR_BLACK	"^0"
@@ -467,8 +435,11 @@ qboolean Q_IsColorString(const char *p);  // ^[0-9a-zA-Z]
 #define S_COLOR_CYAN	"^5"
 #define S_COLOR_MAGENTA	"^6"
 #define S_COLOR_WHITE	"^7"
+#ifdef STANDALONEOA
+#define S_COLOR_MENU	"^8"
+#endif
 
-extern vec4_t	g_color_table[8];
+extern vec4_t	g_color_table[NUMBER_OF_COLORS];
 
 #define	MAKERGB( v, r, g, b ) v[0]=r;v[1]=g;v[2]=b
 #define	MAKERGBA( v, r, g, b, a ) v[0]=r;v[1]=g;v[2]=b;v[3]=a
@@ -521,23 +492,8 @@ int Q_isnan(float x);
 		(*temp)[2] = round((*temp)[2]);\
 	} while(0)
 #endif
-/*
-// if your system does not have lrintf() and round() you can try this block. Please also open a bug report at bugzilla.icculus.org
-// or write a mail to the ioq3 mailing list.
-#else
-  #define Q_ftol(v) ((long) (v))
-  #define Q_round(v) do { if((v) < 0) (v) -= 0.5f; else (v) += 0.5f; (v) = Q_ftol((v)); } while(0)
-  #define Q_SnapVector(vec) \
-	do\
-	{\
-		vec3_t *temp = (vec);\
-		\
-		Q_round((*temp)[0]);\
-		Q_round((*temp)[1]);\
-		Q_round((*temp)[2]);\
-	} while(0)
-#endif
-*/
+// Without lrintf() and round(), Q_ftol can be a (long) cast and Q_SnapVector a +/-0.5 round;
+// please report such a system to the ioq3 project.
 
 #if idppc
 
@@ -860,6 +816,9 @@ char	*Q_strupr( char *s1 );
 const char	*Q_stristr( const char *s, const char *find);
 
 // buffer size safe library replacements
+#ifdef STANDALONEOA
+char	*Q_strncpy( char *strDest, const char *strSource, size_t count );
+#endif
 void	Q_strncpyz( char *dest, const char *src, int destsize );
 void	Q_strcat( char *dest, int size, const char *src );
 
@@ -887,18 +846,6 @@ typedef struct
 } qint64;
 
 //=============================================
-/*
-short	BigShort(short l);
-short	LittleShort(short l);
-int		BigLong (int l);
-int		LittleLong (int l);
-qint64  BigLong64 (qint64 l);
-qint64  LittleLong64 (qint64 l);
-float	BigFloat (const float *l);
-float	LittleFloat (const float *l);
-
-void	Swap_Init (void);
-*/
 char	* QDECL va(char *format, ...) Q_PRINTF_FUNC(1, 2);
 
 #define TRUNCATE_LENGTH	64
@@ -906,9 +853,7 @@ void Com_TruncateLongString( char *buffer, const char *s );
 
 //=============================================
 
-//
 // key / value info strings
-//
 char *Info_ValueForKey( const char *s, const char *key );
 void Info_RemoveKey( char *s, const char *key );
 void Info_RemoveKey_Big( char *s, const char *key );
@@ -922,30 +867,17 @@ void	QDECL Com_Error( int level, const char *error, ... ) Q_NO_RETURN Q_PRINTF_F
 void	QDECL Com_Printf( const char *msg, ... ) Q_PRINTF_FUNC(1, 2);
 
 
-/*
-==========================================================
-
-CVARS (console variables)
-
-Many variables can be used for cheating purposes, so when
-cheats is zero, force all unspecified variables to their
-default values.
-==========================================================
-*/
+// Cvars; when cheats is zero, variables that can be used for cheating are forced to defaults.
 
 #define	CVAR_ARCHIVE		0x0001	// set to cause it to be saved to vars.rc
-					// used for system variables, not for player
-					// specific configurations
+					// used for system variables, not player-specific configurations
 #define	CVAR_USERINFO		0x0002	// sent to server on connect or change
 #define	CVAR_SERVERINFO		0x0004	// sent in response to front end requests
 #define	CVAR_SYSTEMINFO		0x0008	// these cvars will be duplicated on all clients
 #define	CVAR_INIT		0x0010	// don't allow change from console at all,
 					// but can be set from the command line
 #define	CVAR_LATCH		0x0020	// will only change when C code next does
-					// a Cvar_Get(), so it can't be changed
-					// without proper initialization.  modified
-					// will be set, even though the value hasn't
-					// changed yet
+					// a Cvar_Get(), so it needs proper initialization; modified is set before the value changes
 #define	CVAR_ROM		0x0040	// display only, cannot be set by user at all
 #define	CVAR_USER_CREATED	0x0080	// created by a set command
 #define	CVAR_TEMP		0x0100	// can be set even when cheats are disabled, but is not archived
@@ -1000,13 +932,7 @@ typedef struct {
 } vmCvar_t;
 
 
-/*
-==============================================================
-
-VoIP
-
-==============================================================
-*/
+// VoIP
 
 // if you change the count of flags be sure to also change VOIP_FLAGNUM
 #define VOIP_SPATIAL		0x01		// spatialized voip message
@@ -1016,13 +942,7 @@ VoIP
 // change this.
 #define VOIP_FLAGCNT		2
 
-/*
-==============================================================
-
-COLLISION DETECTION
-
-==============================================================
-*/
+// COLLISION DETECTION
 
 #include "surfaceflags.h"			// shared with the q3map utility
 
@@ -1034,11 +954,6 @@ COLLISION DETECTION
 #define	PLANE_NON_AXIAL	3
 
 
-/*
-=================
-PlaneTypeForNormal
-=================
-*/
 
 #define PlaneTypeForNormal(x) (x[0] == 1.0 ? PLANE_X : (x[1] == 1.0 ? PLANE_Y : (x[2] == 1.0 ? PLANE_Z : PLANE_NON_AXIAL) ) )
 
@@ -1093,9 +1008,8 @@ typedef struct {
 #define	KEYCATCH_CGAME			0x0008
 
 
-// sound channels
-// channel 0 never willingly overrides
-// other channels will allways override a playing sound on that channel
+// Sound channels: channel 0 never willingly overrides; the others always override a playing
+// sound on that channel.
 typedef enum {
 	CHAN_AUTO,
 	CHAN_LOCAL,		// menu sounds, etc
@@ -1108,13 +1022,7 @@ typedef enum {
 } soundChannel_t;
 
 
-/*
-========================================================================
-
-  ELEMENTS COMMUNICATED ACROSS THE NET
-
-========================================================================
-*/
+// ELEMENTS COMMUNICATED ACROSS THE NET
 
 #define	ANGLE2SHORT(x)	((int)((x)*65536/360) & 65535)
 #define	SHORT2ANGLE(x)	((x)*(360.0/65536))
@@ -1123,18 +1031,14 @@ typedef enum {
 #define	SNAPFLAG_NOT_ACTIVE		2	// snapshot used during connection and for zombies
 #define SNAPFLAG_SERVERCOUNT	4	// toggled every map_restart so transitions can be detected
 
-//
 // per-level limits
-//
 #define	MAX_CLIENTS			64		// absolute limit
 #define MAX_LOCATIONS		64
 
 #define	GENTITYNUM_BITS		10		// don't need to send any more
 #define	MAX_GENTITIES		(1<<GENTITYNUM_BITS)
 
-// entitynums are communicated with GENTITY_BITS, so any reserved
-// values that are going to be communcated over the net need to
-// also be in this range
+// Entity numbers travel as GENTITY_BITS, so reserved values sent over the net must fit that range.
 #define	ENTITYNUM_NONE		(MAX_GENTITIES-1)
 #define	ENTITYNUM_WORLD		(MAX_GENTITIES-2)
 #define	ENTITYNUM_MAX_NORMAL	(MAX_GENTITIES-2)
@@ -1172,16 +1076,13 @@ typedef struct {
 
 #define PS_PMOVEFRAMECOUNTBITS	6
 
-// playerState_t is the information needed by both the client and server
-// to predict player motion and actions
-// nothing outside of pmove should modify these, or some degree of prediction error
-// will occur
+// What client and server both need to predict player motion and actions; only pmove may
+// modify it, or prediction errors follow.
 
 // you can't add anything to this without modifying the code in msg.c
 
-// playerState_t is a full superset of entityState_t as it is used by players,
-// so if a playerState_t is transmitted, the entityState_t can be fully derived
-// from it.
+// A full superset of entityState_t for players, so a transmitted playerState_t fully derives
+// the entityState_t.
 typedef struct playerState_s {
 	int			commandTime;	// cmd->serverTime of last executed command
 	int			pm_type;
@@ -1206,9 +1107,7 @@ typedef struct playerState_s {
 	int			torsoAnim;		// mask off ANIM_TOGGLEBIT
 
 	int			movementDir;	// a number 0 to 7 that represents the relative angle
-								// of movement to the view angle (axial and diagonals)
-								// when at rest, the value will remain unchanged
-								// used to twist the legs during strafing
+								// of movement to the view angle; unchanged at rest, twists the legs while strafing
 
 	vec3_t		grapplePoint;	// location of grapple to pull towards if PMF_GRAPPLE_PULL
 
@@ -1255,19 +1154,14 @@ typedef struct playerState_s {
 //====================================================================
 
 
-//
 // usercmd_t->button bits, many of which are generated by the client system,
 // so they aren't game/cgame only definitions
-//
 #define	BUTTON_ATTACK		1
 #define	BUTTON_TALK			2			// displays talk balloon and disables actions
 #define	BUTTON_USE_HOLDABLE	4
 #define	BUTTON_GESTURE		8
 #define	BUTTON_WALKING		16			// walking can't just be inferred from MOVE_RUN
-										// because a key pressed late in the frame will
-										// only generate a small move value for that frame
-										// walking will use different animations and
-										// won't generate footsteps
+										// because a late key press gives only a small move; walking animates differently, no footsteps
 #define BUTTON_AFFIRMATIVE	32
 #define	BUTTON_NEGATIVE		64
 
@@ -1312,12 +1206,8 @@ typedef struct {
 	vec3_t	trDelta;			// velocity, etc
 } trajectory_t;
 
-// entityState_t is the information conveyed from the server
-// in an update message about entities that the client will
-// need to render in some way
-// Different eTypes may use the information in different ways
-// The messages are delta compressed, so it doesn't really matter if
-// the structure size is fairly large
+// What the server sends about entities the client must render; eTypes use it differently.
+// Messages are delta compressed, so the size matters little.
 
 typedef struct entityState_s {
 	int		number;			// entity index
@@ -1453,10 +1343,8 @@ typedef enum _flag_status {
 
 
 
-// Platform headers (code/psp/psp_platform.h) may shrink these two: the master
-// server list is cls.globalServers[MAX_GLOBAL_SERVERS] plus a parallel address
-// array (client/client.h:327,330), ~1 MB of .bss on a port whose networking is
-// loopback-only.
+// Platform headers (code/psp/psp_platform.h) may shrink these: cls.globalServers plus its address
+// array (client/client.h) are ~1 MB of .bss.
 #ifndef MAX_GLOBAL_SERVERS
 #define	MAX_GLOBAL_SERVERS				4096
 #endif

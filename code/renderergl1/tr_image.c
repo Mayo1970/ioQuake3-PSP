@@ -34,9 +34,6 @@ int		gl_filter_max = GL_LINEAR;
 #define FILE_HASH_SIZE		1024
 static	image_t*		hashTable[FILE_HASH_SIZE];
 
-/*
-** R_GammaCorrect
-*/
 void R_GammaCorrect( byte *buffer, int bufSize ) {
 	int i;
 
@@ -59,11 +56,7 @@ textureMode_t modes[] = {
 	{"GL_LINEAR_MIPMAP_LINEAR", GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR}
 };
 
-/*
-================
-return a hash value for the filename
-================
-*/
+// return a hash value for the filename
 static long generateHashValue( const char *fname ) {
 	int		i;
 	long	hash;
@@ -82,11 +75,6 @@ static long generateHashValue( const char *fname ) {
 	return hash;
 }
 
-/*
-===============
-GL_TextureMode
-===============
-*/
 void GL_TextureMode( const char *string ) {
 	int		i;
 	image_t	*glt;
@@ -124,11 +112,6 @@ void GL_TextureMode( const char *string ) {
 	}
 }
 
-/*
-===============
-R_SumOfUsedImages
-===============
-*/
 int R_SumOfUsedImages( void ) {
 	int	total;
 	int i;
@@ -143,11 +126,6 @@ int R_SumOfUsedImages( void ) {
 	return total;
 }
 
-/*
-===============
-R_ImageList_f
-===============
-*/
 void R_ImageList_f( void ) {
 	int i;
 	int estTotalSize = 0;
@@ -287,19 +265,8 @@ void R_ImageList_f( void ) {
 
 //=======================================================================
 
-/*
-================
-ResampleTexture
-
-Used to resample images in a more general than quartering fashion.
-
-This will only be filtered properly if the resampled size
-is greater than half the original size.
-
-If a larger shrinking is needed, use the mipmap function 
-before or after.
-================
-*/
+// Resamples more generally than quartering; filtering is right only above half the original
+// size, so for more shrinking mipmap before or after.
 static void ResampleTexture( unsigned *in, int inwidth, int inheight, unsigned *out,  
 							int outwidth, int outheight ) {
 	int		i, j;
@@ -340,14 +307,8 @@ static void ResampleTexture( unsigned *in, int inwidth, int inheight, unsigned *
 	}
 }
 
-/*
-================
-R_LightScaleTexture
-
-Scale up the pixel values in a texture to increase the
-lighting range
-================
-*/
+// Scale up the pixel values in a texture to increase the
+// lighting range
 void R_LightScaleTexture (unsigned *in, int inwidth, int inheight, qboolean only_gamma )
 {
 	if ( only_gamma )
@@ -399,14 +360,8 @@ void R_LightScaleTexture (unsigned *in, int inwidth, int inheight, qboolean only
 }
 
 
-/*
-================
-R_MipMap2
-
-Operates in place, quartering the size of the texture
-Proper linear filter
-================
-*/
+// Operates in place, quartering the size of the texture
+// Proper linear filter
 static void R_MipMap2( unsigned *in, int inWidth, int inHeight ) {
 	int			i, j, k;
 	byte		*outpix;
@@ -455,13 +410,7 @@ static void R_MipMap2( unsigned *in, int inWidth, int inHeight ) {
 	ri.Hunk_FreeTempMemory( temp );
 }
 
-/*
-================
-R_MipMap
-
-Operates in place, quartering the size of the texture
-================
-*/
+// Operates in place, quartering the size of the texture
 static void R_MipMap (byte *in, int width, int height) {
 	int		i, j;
 	byte	*out;
@@ -503,13 +452,7 @@ static void R_MipMap (byte *in, int width, int height) {
 }
 
 
-/*
-==================
-R_BlendOverTexture
-
-Apply a color blend over a set of pixels
-==================
-*/
+// Apply a color blend over a set of pixels
 static void R_BlendOverTexture( byte *data, int pixelCount, byte blend[4] ) {
 	int		i;
 	int		inverseAlpha;
@@ -547,12 +490,6 @@ byte	mipBlendColors[16][4] = {
 };
 
 
-/*
-===============
-Upload32
-
-===============
-*/
 static void Upload32( unsigned *data, 
 						  int width, int height, 
 						  qboolean mipmap, 
@@ -571,9 +508,7 @@ static void Upload32( unsigned *data,
 	GLenum		internalFormat = GL_RGB;
 	float		rMax = 0, gMax = 0, bMax = 0;
 
-	//
 	// convert to exact power of 2 sizes
-	//
 	for (scaled_width = 1 ; scaled_width < width ; scaled_width<<=1)
 		;
 	for (scaled_height = 1 ; scaled_height < height ; scaled_height<<=1)
@@ -583,6 +518,15 @@ static void Upload32( unsigned *data,
 	if ( r_roundImagesDown->integer && scaled_height > height )
 		scaled_height >>= 1;
 
+#ifdef PSP_XBOX_MEMORY
+	// Xbox port: a shrinking resample reads only at or after what it writes, so it runs in place.
+	if ( ( scaled_width != width || scaled_height != height ) &&
+		scaled_width <= width && scaled_height <= height ) {
+		ResampleTexture( data, width, height, data, scaled_width, scaled_height );
+		width = scaled_width;
+		height = scaled_height;
+	} else
+#endif
 	if ( scaled_width != width || scaled_height != height ) {
 		resampledBuffer = ri.Hunk_AllocateTempMemory( scaled_width * scaled_height * 4 );
 		ResampleTexture (data, width, height, resampledBuffer, scaled_width, scaled_height);
@@ -591,17 +535,13 @@ static void Upload32( unsigned *data,
 		height = scaled_height;
 	}
 
-	//
 	// perform optional picmip operation
-	//
 	if ( picmip ) {
 		scaled_width >>= r_picmip->integer;
 		scaled_height >>= r_picmip->integer;
 	}
 
-	//
 	// clamp to minimum size
-	//
 	if (scaled_width < 1) {
 		scaled_width = 1;
 	}
@@ -609,23 +549,22 @@ static void Upload32( unsigned *data,
 		scaled_height = 1;
 	}
 
-	//
-	// clamp to the current upper OpenGL limit
-	// scale both axis down equally so we don't have to
-	// deal with a half mip resampling
-	//
+	// Clamp to the GL size limit, halving both axes equally to avoid a half mip resample.
 	while ( scaled_width > glConfig.maxTextureSize
 		|| scaled_height > glConfig.maxTextureSize ) {
 		scaled_width >>= 1;
 		scaled_height >>= 1;
 	}
 
+#ifdef PSP_XBOX_MEMORY
+	// The mip chain runs in data, which the picmip loop below already overwrites upstream.
+	scaledBuffer = data;
+#else
 	scaledBuffer = ri.Hunk_AllocateTempMemory( sizeof( unsigned ) * scaled_width * scaled_height );
+#endif
 
-	//
 	// scan the texture for each channel's max values
 	// and verify if the alpha channel is being used or not
-	//
 	c = width*height;
 	scan = ((byte *)data);
 	samples = 3;
@@ -759,7 +698,9 @@ static void Upload32( unsigned *data,
 
 			goto done;
 		}
+#ifndef PSP_XBOX_MEMORY
 		Com_Memcpy (scaledBuffer, data, width*height*4);
+#endif
 	}
 	else
 	{
@@ -775,7 +716,9 @@ static void Upload32( unsigned *data,
 				height = 1;
 			}
 		}
+#ifndef PSP_XBOX_MEMORY
 		Com_Memcpy( scaledBuffer, data, width * height * 4 );
+#endif
 	}
 
 	R_LightScaleTexture (scaledBuffer, scaled_width, scaled_height, !mipmap );
@@ -831,20 +774,16 @@ done:
 
 	GL_CheckErrors();
 
+#ifndef PSP_XBOX_MEMORY
 	if ( scaledBuffer != 0 )
 		ri.Hunk_FreeTempMemory( scaledBuffer );
+#endif
 	if ( resampledBuffer != 0 )
 		ri.Hunk_FreeTempMemory( resampledBuffer );
 }
 
 
-/*
-================
-R_CreateImage
-
-This is the only way any image_t are created
-================
-*/
+// This is the only way any image_t are created
 image_t *R_CreateImage( const char *name, byte *pic, int width, int height,
 		imgType_t type, imgFlags_t flags, int internalFormat ) {
 	image_t		*image;
@@ -941,14 +880,8 @@ static imageExtToLoaderMap_t imageLoaders[ ] =
 
 static int numImageLoaders = ARRAY_LEN( imageLoaders );
 
-/*
-=================
-R_LoadImage
-
-Loads any of the supported image types into a canonical
-32 bit format.
-=================
-*/
+// Loads any of the supported image types into a canonical
+// 32 bit format.
 void R_LoadImage( const char *name, byte **pic, int *width, int *height )
 {
 	qboolean orgNameFailed = qfalse;
@@ -1024,14 +957,8 @@ void R_LoadImage( const char *name, byte **pic, int *width, int *height )
 }
 
 
-/*
-===============
-R_FindImageFile
-
-Finds or loads the given image.
-Returns NULL if it fails, not a default image.
-==============
-*/
+// Finds or loads the given image.
+// Returns NULL if it fails, not a default image.
 image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 {
 	image_t	*image;
@@ -1048,9 +975,7 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 
 	hash = generateHashValue(name);
 
-	//
 	// see if the image is already loaded
-	//
 	for (image=hashTable[hash]; image; image=image->next) {
 		if ( !strcmp( name, image->imgName ) ) {
 			// the white image can be used with any set of parms, but other mismatches are errors
@@ -1063,21 +988,19 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 		}
 	}
 
-	//
 	// load the pic from disk
-	//
 #ifdef __PSP__
-	// JPEGs decode at 1/2^r_picmip, so the full-size RGBA buffer never exists (Xbox port).
-	r_pspJpegShift = ( flags & IMGFLAG_PICMIP ) && r_picmip->integer <= 3 ? r_picmip->integer : 0;
-	r_pspJpegScaled = qfalse;
+	// JPEG (Xbox port) and TGA files decode at 1/2^r_picmip, so the full-size RGBA buffer never exists.
+	r_pspImageShift = ( flags & IMGFLAG_PICMIP ) && r_picmip->integer <= 3 ? r_picmip->integer : 0;
+	r_pspImageScaled = qfalse;
 	countStart = Sys_PSP_CountBegin();
 #endif
 	R_LoadImage( name, &pic, &width, &height );
 #ifdef __PSP__
 	Sys_PSP_CountEnd( PSP_COUNT_IMAGE_LOAD, countStart, pic ? 1 : 0 );
-	r_pspJpegShift = 0;
+	r_pspImageShift = 0;
 	// Picmip is already applied, so Upload32 must not halve the image again.
-	if ( r_pspJpegScaled ) {
+	if ( r_pspImageScaled ) {
 		flags &= ~IMGFLAG_PICMIP;
 	}
 #endif
@@ -1092,16 +1015,37 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 #else
 	image = R_CreateImage( ( char * ) name, pic, width, height, type, flags, 0 );
 #endif
-	ri.Free( pic );
+	R_ImageFree( pic );
 	return image;
 }
 
+#ifdef PSP_XBOX_MEMORY
+void *R_PSP_ImageMalloc( int bytes ) {
+	void	*memory = malloc( bytes > 0 ? bytes : 1 );
 
-/*
-================
-R_CreateDlightImage
-================
-*/
+	// Heap first, then a zone block that fits (256 covers its header and padding).
+	if ( !memory && Z_PSP_LargestFree() > bytes + 256 ) {
+		memory = ri.Malloc( bytes );
+	}
+	// ERR_DROP, not the zone's ERR_FATAL: a failed map load returns to the menu.
+	if ( !memory ) {
+		Sys_PSP_HeapReport( "at image decode failure" );
+		ri.Error( ERR_DROP, "R_PSP_ImageMalloc: no memory for %d bytes", bytes );
+	}
+	return memory;
+}
+
+void R_PSP_ImageFree( void *ptr ) {
+	if ( Z_PSP_InMainZone( ptr ) ) {
+		ri.Free( ptr );
+	} else {
+		free( ptr );
+	}
+}
+#endif
+
+
+// R_CreateDlightImage
 #define	DLIGHT_SIZE	16
 static void R_CreateDlightImage( void ) {
 	int		x,y;
@@ -1131,11 +1075,6 @@ static void R_CreateDlightImage( void ) {
 }
 
 
-/*
-=================
-R_InitFogTable
-=================
-*/
 void R_InitFogTable( void ) {
 	int		i;
 	float	d;
@@ -1150,15 +1089,8 @@ void R_InitFogTable( void ) {
 	}
 }
 
-/*
-================
-R_FogFactor
-
-Returns a 0.0 to 1.0 fog density value
-This is called for each texel of the fog texture on startup
-and for each vertex of transparent shaders in fog dynamically
-================
-*/
+// Returns a 0.0 to 1.0 fog density; called per fog-texture texel at startup and per vertex of
+// transparent shaders in fog.
 float	R_FogFactor( float s, float t ) {
 	float	d;
 
@@ -1185,11 +1117,7 @@ float	R_FogFactor( float s, float t ) {
 	return d;
 }
 
-/*
-================
-R_CreateFogImage
-================
-*/
+// R_CreateFogImage
 #define	FOG_S	256
 #define	FOG_T	32
 static void R_CreateFogImage( void ) {
@@ -1214,11 +1142,7 @@ static void R_CreateFogImage( void ) {
 	ri.Hunk_FreeTempMemory( data );
 }
 
-/*
-==================
-R_CreateDefaultImage
-==================
-*/
+// R_CreateDefaultImage
 #define	DEFAULT_SIZE	16
 static void R_CreateDefaultImage( void ) {
 	int		x;
@@ -1250,11 +1174,6 @@ static void R_CreateDefaultImage( void ) {
 	tr.defaultImage = R_CreateImage("*default", (byte *)data, DEFAULT_SIZE, DEFAULT_SIZE, IMGTYPE_COLORALPHA, IMGFLAG_MIPMAP, 0);
 }
 
-/*
-==================
-R_CreateBuiltinImages
-==================
-*/
 void R_CreateBuiltinImages( void ) {
 	int		x,y;
 	byte	data[DEFAULT_SIZE][DEFAULT_SIZE][4];
@@ -1289,11 +1208,6 @@ void R_CreateBuiltinImages( void ) {
 }
 
 
-/*
-===============
-R_SetColorMappings
-===============
-*/
 void R_SetColorMappings( void ) {
 	int		i, j;
 	float	g;
@@ -1374,11 +1288,6 @@ void R_SetColorMappings( void ) {
 	}
 }
 
-/*
-===============
-R_InitImages
-===============
-*/
 void	R_InitImages( void ) {
 	Com_Memset(hashTable, 0, sizeof(hashTable));
 	// build brightness translation tables
@@ -1388,11 +1297,6 @@ void	R_InitImages( void ) {
 	R_CreateBuiltinImages();
 }
 
-/*
-===============
-R_DeleteTextures
-===============
-*/
 void R_DeleteTextures( void ) {
 	int		i;
 
@@ -1414,22 +1318,10 @@ void R_DeleteTextures( void ) {
 	}
 }
 
-/*
-============================================================================
+// SKINS
 
-SKINS
-
-============================================================================
-*/
-
-/*
-==================
-CommaParse
-
-This is unfortunate, but the skin files aren't
-compatible with our normal parsing rules.
-==================
-*/
+// This is unfortunate, but the skin files aren't
+// compatible with our normal parsing rules.
 static char *CommaParse( char **data_p ) {
 	int c = 0, len;
 	char *data;
@@ -1528,12 +1420,6 @@ static char *CommaParse( char **data_p ) {
 }
 
 
-/*
-===============
-RE_RegisterSkin
-
-===============
-*/
 qhandle_t RE_RegisterSkin( const char *name ) {
 	skinSurface_t parseSurfaces[MAX_SKIN_SURFACES];
 	qhandle_t	hSkin;
@@ -1651,11 +1537,6 @@ qhandle_t RE_RegisterSkin( const char *name ) {
 }
 
 
-/*
-===============
-R_InitSkins
-===============
-*/
 void	R_InitSkins( void ) {
 	skin_t		*skin;
 
@@ -1669,11 +1550,6 @@ void	R_InitSkins( void ) {
 	skin->surfaces[0].shader = tr.defaultShader;
 }
 
-/*
-===============
-R_GetSkinByHandle
-===============
-*/
 skin_t	*R_GetSkinByHandle( qhandle_t hSkin ) {
 	if ( hSkin < 1 || hSkin >= tr.numSkins ) {
 		return tr.skins[0];
@@ -1681,11 +1557,6 @@ skin_t	*R_GetSkinByHandle( qhandle_t hSkin ) {
 	return tr.skins[ hSkin ];
 }
 
-/*
-===============
-R_SkinList_f
-===============
-*/
 void	R_SkinList_f( void ) {
 	int			i, j;
 	skin_t		*skin;

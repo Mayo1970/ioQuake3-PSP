@@ -73,27 +73,20 @@ typedef struct image_s {
 extern	refimport_t		ri;
 extern glconfig_t	glConfig;		// outside of TR since it shouldn't be cleared during ref re-init
 
-// These variables should live inside glConfig but can't because of
-// compatibility issues to the original ID vms.  If you release a stand-alone
-// game and your mod uses tr_types.h from this build you can safely move them
-// to the glconfig_t struct.
+// These belong in glConfig but would break the original id vms; a stand-alone game using
+// this build's tr_types.h can move them into glconfig_t.
 extern qboolean  textureFilterAnisotropic;
 extern int       maxAnisotropy;
 extern float     displayAspect;
 extern qboolean  haveClampToEdge;
 
-//
 // cvars
-//
 extern cvar_t *r_stencilbits;			// number of desired stencil bits
 extern cvar_t *r_depthbits;			// number of desired depth bits
 extern cvar_t *r_colorbits;			// number of desired color bits, only relevant for fullscreen
 extern cvar_t *r_texturebits;			// number of desired texture bits
 extern cvar_t *r_ext_multisample;
-										// 0 = use framebuffer depth
-										// 16 = use 16-bit textures
-										// 32 = use 32-bit textures
-										// all else = error
+										// r_texturebits: 0 = framebuffer depth, 16 or 32 = texture bits, anything else = error
 
 extern cvar_t *r_mode;				// video mode
 extern cvar_t *r_noborder;
@@ -137,33 +130,33 @@ void R_InitFreeType( void );
 void R_DoneFreeType( void );
 void RE_RegisterFont(const char *fontName, int pointSize, fontInfo_t *font);
 
-/*
-=============================================================
-
-IMAGE LOADERS
-
-=============================================================
-*/
+// IMAGE LOADERS
 
 void R_LoadBMP( const char *name, byte **pic, int *width, int *height );
 void R_LoadJPG( const char *name, byte **pic, int *width, int *height );
 #ifdef __PSP__
-// R_FindImageFile sets the shift (picmip); R_LoadJPG reports whether it decoded that small.
-extern int		r_pspJpegShift;
-extern qboolean	r_pspJpegScaled;
+// R_FindImageFile sets the shift (picmip); R_LoadJPG and R_LoadTGA report whether they decoded that small.
+extern int		r_pspImageShift;
+extern qboolean	r_pspImageScaled;
 #endif
 void R_LoadPCX( const char *name, byte **pic, int *width, int *height );
 void R_LoadPNG( const char *name, byte **pic, int *width, int *height );
 void R_LoadPVR( const char *name, byte **pic, int *width, int *height );
 void R_LoadTGA( const char *name, byte **pic, int *width, int *height );
 
-/*
-====================================================================
+// The pic a loader returns; R_FindImageFile frees it with R_ImageFree.
+#ifdef PSP_XBOX_MEMORY
+// Xbox port: decoded images are transient, so they come from the heap, and only then the zone.
+void *R_PSP_ImageMalloc( int bytes );
+void R_PSP_ImageFree( void *ptr );
+#define R_ImageMalloc( bytes )	R_PSP_ImageMalloc( bytes )
+#define R_ImageFree( ptr )		R_PSP_ImageFree( ptr )
+#else
+#define R_ImageMalloc( bytes )	ri.Malloc( bytes )
+#define R_ImageFree( ptr )		ri.Free( ptr )
+#endif
 
-IMPLEMENTATION SPECIFIC FUNCTIONS
-
-====================================================================
-*/
+// IMPLEMENTATION SPECIFIC FUNCTIONS
 
 void		GLimp_Init( qboolean fixedFunction );
 void		GLimp_Shutdown( void );

@@ -523,3 +523,41 @@ Sources: [Legacy/VFPU.MD](../Legacy/VFPU.MD) (August 2026), `vfpu-docs/docs/refe
 6. Then, from the measurements: the bot fixes, V2/V3/V5/V6, and the ME mixer (only if the paint stays above 2 ms).
 
 If S1, B1 (150), B3 and R1 all work, a fight frame gets about 4.5-7 ms shorter: 33-41 ms goes to about 27-36 ms. The gains are not proven to add up.
+
+## 7. OpenArena flavor and the Xbox-port memory work
+
+Added 2026-09-27, build-verified, not tested on hardware. Build OpenArena with `-DFLAVOR=oa`.
+
+- Gamecode: OpenArena 0.8.8 (`OpenArena/gamecode`, branch `oa-0.8.8`) in `oa/`, the same file set as the Xbox port. cgame, ui and qagame are native, as in q3.
+- Engine: the Xbox port's `STANDALONEOA` changes (names and `baseoa`, protocol 71 legacy netchan, dpmaster, `sv_dorestart`, `^8` color, `Q_strncpy`, `com_standalone 1`, no `FS_CheckPak0`).
+- Pure servers: the native cgame and ui replace a stock OA 0.8.8 QVM (`pak6-patch088.pk3`, checksum 3601704695).
+- Music: Ogg through Tremor (`libvorbisidec`). libvorbis would round each sample through soft-float double.
+- OA controls menu: the same short list as q3 (no weapon, look, chat or VoIP bindings).
+- OA voice chat tables (2.27 MB of cgame `.bss`): allocated on first use. Only the `MISSIONPACK` voice chat path uses them, so a baseoa game never allocates them.
+
+Memory work, now in both flavors:
+
+- `PSP_XBOX_MEMORY` (ON by default, `-DPSP_XBOX_MEMORY=OFF` for an A/B run):
+  - The RoQ decoder state (3.1 MB of `.bss`) is allocated only while a cinematic plays: from the zone when a block fits (boot), else from the heap.
+  - Decoded images come from the heap, then from the zone. 506 OA textures are 512x512 or larger (121 player skins).
+  - `Upload32` resamples and builds mips in place, without the two hunk temp buffers.
+- TGA files decode at 1/2^picmip, as JPEG files already did (`R_LoadTGA`, box filter). A host test on 19 TGAs (types 2, 3 and 10, RLE runs across rows, sizes that do not divide) matched a box filter of the full decode, and shift 0 matched the upstream loader byte for byte.
+
+Budget: each heap takes its EBOOT image savings against the tested 35072 KB q3 build, less 68-100 KB, so the outside-heap PRX budget keeps a margin. The hunk stays 22 MB (`PSP_HUNK_RESERVE_MB` = heap MB - 22), so the extra heap goes to decodes and texture spill.
+
+| Build | EBOOT image | `PSP_HEAP_KB` | Reserve |
+|---|---|---|---|
+| q3, memory OFF (tested) | 14825264 | 35072 | 12 |
+| q3, memory ON | 11712868 | 38016 | 15 |
+| oa, memory ON | 12297480 | 37440 | 14 |
+| oa, memory OFF | 15411056 | 34432 | 11 |
+
+Builds:
+
+- `build-out-oa/EBOOT.PBP` (`oa-memory`) and `build-out-oa/debug/EBOOT.PBP` (`oa-memory-debug`, writes the log). No icon until `graphics/oa/ICON0.png` and `PIC1.png` exist.
+- `build-out-q3dm11/xbox-memory/EBOOT.PBP` (`q3dm11-xbox-memory-debug`) and `build-out-q3dm11/xbox-memory/release/EBOOT.PBP`.
+
+Tests:
+
+1. q3: Q3DM11 with 4 bots as in section 1. Compare the `PSP heap`, `PSP hunk` and `PSP zone` lines and `outside-heap` with `think-route`. The intro must still play.
+2. oa: boot (the intro should play), a map with bots, music, the controls menu and an internet server.

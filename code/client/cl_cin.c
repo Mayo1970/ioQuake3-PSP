@@ -20,16 +20,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 
-/*****************************************************************************
- * name:		cl_cin.c
- *
- * desc:		video and cinematic playback
- *
- * $Archive: /MissionPack/code/client/cl_cin.c $
- *
- * cl_glconfig.hwtype trtypes 3dfx/ragepro need 256x256
- *
- *****************************************************************************/
+// Video and cinematic playback; 3dfx/ragepro hardware types need 256x256.
 
 #include "client.h"
 #include "snd_local.h"
@@ -55,23 +46,18 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 static void RoQ_init( void );
 
-/******************************************************************************
-*
-* Class:		trFMV
-*
-* Description:	RoQ/RnR manipulation routines
-*				not entirely complete for first run
-*
-******************************************************************************/
+// trFMV: RoQ/RnR manipulation routines, not entirely complete for first run.
 
 static	long				ROQ_YY_tab[256];
 static	long				ROQ_UB_tab[256];
 static	long				ROQ_UG_tab[256];
 static	long				ROQ_VG_tab[256];
 static	long				ROQ_VR_tab[256];
+#ifndef PSP_XBOX_MEMORY
 static	unsigned short		vq2[256*16*4];
 static	unsigned short		vq4[256*64*4];
 static	unsigned short		vq8[256*256*4];
+#endif
 
 
 typedef struct {
@@ -86,6 +72,24 @@ typedef struct {
 
 	int					currentHandle;
 } cinematics_t;
+
+#ifdef PSP_XBOX_MEMORY
+// Xbox port: the ~3 MB decoder state exists only while a cinematic is open, not in .bss.
+typedef struct {
+	unsigned short		vq2[256*16*4];
+	unsigned short		vq4[256*64*4];
+	unsigned short		vq8[256*256*4];
+	cinematics_t		cin;
+} cinStorage_t;
+
+static cinStorage_t		*cinStorage;
+static qboolean			cinStorageInZone;
+
+#define vq2 (cinStorage->vq2)
+#define vq4 (cinStorage->vq4)
+#define vq8 (cinStorage->vq8)
+#define cin (cinStorage->cin)
+#endif
 
 typedef struct {
 	char				fileName[MAX_OSPATH];
@@ -127,12 +131,49 @@ typedef struct {
 	long				drawX, drawY;
 } cin_cache;
 
+#ifndef PSP_XBOX_MEMORY
 static cinematics_t		cin;
+#endif
 static cin_cache		cinTable[MAX_VIDEO_HANDLES];
 static int				currentHandle = -1;
 static int				CL_handle = -1;
 
 extern int				s_soundtime;		// sample PAIRS
+
+#ifdef PSP_XBOX_MEMORY
+// The boot cinematic plays while the zone is almost empty and the heap is not (~2 MB free);
+// later ones fall back to the heap. The 256 bytes cover the zone block header and padding.
+static qboolean CIN_PSP_AllocStorage(void) {
+	int		bytes = (int)sizeof(*cinStorage);
+
+	cinStorageInZone = Z_PSP_LargestFree() > bytes + 256 ? qtrue : qfalse;
+	cinStorage = cinStorageInZone ? Z_Malloc(bytes) : malloc(bytes);
+	return cinStorage ? qtrue : qfalse;
+}
+
+static void CIN_PSP_ReleaseStorage(void) {
+	int		i;
+
+	if (!cinStorage) {
+		return;
+	}
+	for ( i = 0 ; i < MAX_VIDEO_HANDLES ; i++ ) {
+		if (cinTable[i].fileName[0] != 0) {
+			return;
+		}
+	}
+	// Stale buf pointers would dangle; Draw/Upload skip handles without one.
+	for ( i = 0 ; i < MAX_VIDEO_HANDLES ; i++ ) {
+		cinTable[i].buf = NULL;
+	}
+	if (cinStorageInZone) {
+		Z_Free(cinStorage);
+	} else {
+		free(cinStorage);
+	}
+	cinStorage = NULL;
+}
+#endif
 
 
 void CIN_CloseAllVideos(void) {
@@ -161,15 +202,7 @@ static int CIN_HandleForVideo(void) {
 
 extern int CL_ScaledMilliseconds(void);
 
-//-----------------------------------------------------------------------------
-// RllSetupTable
-//
 // Allocates and initializes the square table.
-//
-// Parameters:	None
-//
-// Returns:		Nothing
-//-----------------------------------------------------------------------------
 static void RllSetupTable( void )
 {
 	int z;
@@ -182,19 +215,8 @@ static void RllSetupTable( void )
 
 
 
-//-----------------------------------------------------------------------------
-// RllDecodeMonoToMono
-//
-// Decode mono source data into a mono buffer.
-//
-// Parameters:	from -> buffer holding encoded data
-//				to ->	buffer to hold decoded data
-//				size =	number of bytes of input (= # of shorts of output)
-//				signedOutput = 0 for unsigned output, non-zero for signed output
-//				flag = flags from asset header
-//
-// Returns:		Number of samples placed in output buffer
-//-----------------------------------------------------------------------------
+// Decodes size bytes of mono data into size mono shorts; flag is the asset header flags.
+// Returns the number of samples written.
 long RllDecodeMonoToMono(unsigned char *from,short *to,unsigned int size,char signedOutput ,unsigned short flag)
 {
 	unsigned int z;
@@ -212,20 +234,8 @@ long RllDecodeMonoToMono(unsigned char *from,short *to,unsigned int size,char si
 }
 
 
-//-----------------------------------------------------------------------------
-// RllDecodeMonoToStereo
-//
-// Decode mono source data into a stereo buffer. Output is 4 times the number
-// of bytes in the input.
-//
-// Parameters:	from -> buffer holding encoded data
-//				to ->	buffer to hold decoded data
-//				size =	number of bytes of input (= 1/4 # of bytes of output)
-//				signedOutput = 0 for unsigned output, non-zero for signed output
-//				flag = flags from asset header
-//
-// Returns:		Number of samples placed in output buffer
-//-----------------------------------------------------------------------------
+// Decodes mono data into a stereo buffer 4 times the input bytes; flag is the asset header flags.
+// Returns the number of samples written.
 long RllDecodeMonoToStereo(unsigned char *from,short *to,unsigned int size,char signedOutput,unsigned short flag)
 {
 	unsigned int z;
@@ -245,19 +255,8 @@ long RllDecodeMonoToStereo(unsigned char *from,short *to,unsigned int size,char 
 }
 
 
-//-----------------------------------------------------------------------------
-// RllDecodeStereoToStereo
-//
-// Decode stereo source data into a stereo buffer.
-//
-// Parameters:	from -> buffer holding encoded data
-//				to ->	buffer to hold decoded data
-//				size =	number of bytes of input (= 1/2 # of bytes of output)
-//				signedOutput = 0 for unsigned output, non-zero for signed output
-//				flag = flags from asset header
-//
-// Returns:		Number of samples placed in output buffer
-//-----------------------------------------------------------------------------
+// Decodes stereo data into a stereo buffer twice the input bytes; flag is the asset header flags.
+// Returns the number of samples written.
 long RllDecodeStereoToStereo(unsigned char *from,short *to,unsigned int size,char signedOutput, unsigned short flag)
 {
 	unsigned int z;
@@ -283,19 +282,8 @@ long RllDecodeStereoToStereo(unsigned char *from,short *to,unsigned int size,cha
 }
 
 
-//-----------------------------------------------------------------------------
-// RllDecodeStereoToMono
-//
-// Decode stereo source data into a mono buffer.
-//
-// Parameters:	from -> buffer holding encoded data
-//				to ->	buffer to hold decoded data
-//				size =	number of bytes of input (= # of bytes of output)
-//				signedOutput = 0 for unsigned output, non-zero for signed output
-//				flag = flags from asset header
-//
-// Returns:		Number of samples placed in output buffer
-//-----------------------------------------------------------------------------
+// Decodes stereo data into a mono buffer of the same byte size; flag is the asset header flags.
+// Returns the number of samples written.
 long RllDecodeStereoToMono(unsigned char *from,short *to,unsigned int size,char signedOutput, unsigned short flag)
 {
 	unsigned int z;
@@ -318,13 +306,8 @@ long RllDecodeStereoToMono(unsigned char *from,short *to,unsigned int size,char 
 	return size;
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void move8_32( byte *src, byte *dst, int spl )
 {
@@ -338,13 +321,8 @@ static void move8_32( byte *src, byte *dst, int spl )
 	}
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void move4_32( byte *src, byte *dst, int spl  )
 {
@@ -358,13 +336,8 @@ static void move4_32( byte *src, byte *dst, int spl  )
 	}
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void blit8_32( byte *src, byte *dst, int spl  )
 {
@@ -378,13 +351,8 @@ static void blit8_32( byte *src, byte *dst, int spl  )
 	}
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 static void blit4_32( byte *src, byte *dst, int spl  )
 {
 	int i;
@@ -397,13 +365,8 @@ static void blit4_32( byte *src, byte *dst, int spl  )
 	}
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void blit2_32( byte *src, byte *dst, int spl  )
 {
@@ -411,13 +374,8 @@ static void blit2_32( byte *src, byte *dst, int spl  )
 	memcpy(dst+spl, src+8, 8);
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void blitVQQuad32fs( byte **status, unsigned char *data )
 {
@@ -497,13 +455,8 @@ int		spl;
 	} while ( status[index] != NULL );
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void ROQ_GenYUVTables( void )
 {
@@ -561,13 +514,8 @@ static void ROQ_GenYUVTables( void )
 	*d++ = *b;	\
 	a++; b++; }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static unsigned short yuv_to_rgb( long y, long u, long v )
 { 
@@ -587,13 +535,8 @@ static unsigned short yuv_to_rgb( long y, long u, long v )
 	return (unsigned short)((r<<11)+(g<<5)+(b));
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 static unsigned int yuv_to_rgb24( long y, long u, long v )
 { 
 	long r,g,b,YY = (long)(ROQ_YY_tab[(y)]);
@@ -612,13 +555,8 @@ static unsigned int yuv_to_rgb24( long y, long u, long v )
 	return LittleLong ((unsigned long)((r)|(g<<8)|(b<<16))|(255UL<<24));
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void decodeCodeBook( byte *input, unsigned short roq_flags )
 {
@@ -645,9 +583,7 @@ static void decodeCodeBook( byte *input, unsigned short roq_flags )
 
 	if (!cinTable[currentHandle].half) {
 		if (!cinTable[currentHandle].smootheddouble) {
-//
 // normal height
-//
 			if (cinTable[currentHandle].samplesPerPixel==2) {
 				for(i=0;i<two;i++) {
 					y0 = (long)*input++;
@@ -717,9 +653,7 @@ static void decodeCodeBook( byte *input, unsigned short roq_flags )
 				}
 			}
 		} else {
-//
 // double height, smoothed
-//
 			if (cinTable[currentHandle].samplesPerPixel==2) {
 				for(i=0;i<two;i++) {
 					y0 = (long)*input++;
@@ -812,9 +746,7 @@ static void decodeCodeBook( byte *input, unsigned short roq_flags )
 			}			
 		}
 	} else {
-//
 // 1/4 screen
-//
 		if (cinTable[currentHandle].samplesPerPixel==2) {
 			for(i=0;i<two;i++) {
 				y0 = (long)*input; input+=2;
@@ -880,13 +812,8 @@ static void decodeCodeBook( byte *input, unsigned short roq_flags )
 	}
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void recurseQuad( long startX, long startY, long quadSize, long xOff, long yOff )
 {
@@ -921,13 +848,8 @@ static void recurseQuad( long startX, long startY, long quadSize, long xOff, lon
 }
 
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void setupQuad( long xOff, long yOff )
 {
@@ -963,13 +885,8 @@ static void setupQuad( long xOff, long yOff )
 	}
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void readQuadInfo( byte *qData )
 {
@@ -1012,13 +929,8 @@ static void readQuadInfo( byte *qData )
 	}
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void RoQPrepMcomp( long xoff, long yoff ) 
 {
@@ -1036,13 +948,8 @@ static void RoQPrepMcomp( long xoff, long yoff )
 	}
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void initRoQ( void ) 
 {
@@ -1055,29 +962,8 @@ static void initRoQ( void )
 	RllSetupTable();
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
-/*
-static byte* RoQFetchInterlaced( byte *source ) {
-	int x, *src, *dst;
-
-	if (currentHandle < 0) return NULL;
-
-	src = (int *)source;
-	dst = (int *)cinTable[currentHandle].buf2;
-
-	for(x=0;x<256*256;x++) {
-		*dst = *src;
-		dst++; src += 2;
-	}
-	return cinTable[currentHandle].buf2;
-}
-*/
+// Function:
+// Description:
 static void RoQReset( void ) {
 	
 	if (currentHandle < 0) return;
@@ -1090,13 +976,8 @@ static void RoQReset( void ) {
 	cinTable[currentHandle].status = FMV_LOOPED;
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void RoQInterrupt(void)
 {
@@ -1121,9 +1002,7 @@ static void RoQInterrupt(void)
 	}
 
 	framedata = cin.file;
-//
 // new frame is ready
-//
 redump:
 	switch(cinTable[currentHandle].roq_id) 
 	{
@@ -1185,9 +1064,7 @@ redump:
 			cinTable[currentHandle].status = FMV_EOF;
 			break;
 	}	
-//
 // read in next frame data
-//
 	if ( cinTable[currentHandle].RoQPlayed >= cinTable[currentHandle].ROQSize ) { 
 		if (cinTable[currentHandle].holdAtEnd==qfalse) {
 			if (cinTable[currentHandle].looping) {
@@ -1217,21 +1094,12 @@ redump:
 		return;
 	}
 	if (cinTable[currentHandle].inMemory && (cinTable[currentHandle].status != FMV_EOF)) { cinTable[currentHandle].inMemory--; framedata += 8; goto redump; }
-//
 // one more frame hits the dust
-//
-//	assert(cinTable[currentHandle].RoQFrameSize <= 65536);
-//	r = FS_Read( cin.file, cinTable[currentHandle].RoQFrameSize+8, cinTable[currentHandle].iFile );
 	cinTable[currentHandle].RoQPlayed	+= cinTable[currentHandle].RoQFrameSize+8;
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void RoQ_init( void )
 {
@@ -1256,13 +1124,8 @@ static void RoQ_init( void )
 
 }
 
-/******************************************************************************
-*
-* Function:		
-*
-* Description:	
-*
-******************************************************************************/
+// Function:
+// Description:
 
 static void RoQShutdown( void ) {
 	const char *s;
@@ -1284,10 +1147,8 @@ static void RoQShutdown( void ) {
 
 	if (cinTable[currentHandle].alterGameState) {
 		clc.state = CA_DISCONNECTED;
-		// we can't just do a vstr nextmap, because
-		// if we are aborting the intro cinematic with
-		// a devmap command, nextmap would be valid by
-		// the time it was referenced
+		// Not "vstr nextmap": when a devmap command aborts the intro, nextmap would already be
+		// valid by the time it was referenced.
 		s = Cvar_VariableString( "nextmap" );
 		if ( s[0] ) {
 			Cbuf_ExecuteText( EXEC_APPEND, va("%s\n", s) );
@@ -1299,11 +1160,6 @@ static void RoQShutdown( void ) {
 	currentHandle = -1;
 }
 
-/*
-==================
-CIN_StopCinematic
-==================
-*/
 e_status CIN_StopCinematic(int handle) {
 	
 	if (handle < 0 || handle>= MAX_VIDEO_HANDLES || cinTable[handle].status == FMV_EOF) return FMV_EOF;
@@ -1322,17 +1178,14 @@ e_status CIN_StopCinematic(int handle) {
 	}
 	cinTable[currentHandle].status = FMV_EOF;
 	RoQShutdown();
+#ifdef PSP_XBOX_MEMORY
+	CIN_PSP_ReleaseStorage();
+#endif
 
 	return FMV_EOF;
 }
 
-/*
-==================
-CIN_RunCinematic
-
-Fetch and decompress the pending frame
-==================
-*/
+// Fetch and decompress the pending frame
 
 
 e_status CIN_RunCinematic (int handle)
@@ -1341,6 +1194,9 @@ e_status CIN_RunCinematic (int handle)
 	int     thisTime = 0;
 
 	if (handle < 0 || handle>= MAX_VIDEO_HANDLES || cinTable[handle].status == FMV_EOF) return FMV_EOF;
+#ifdef PSP_XBOX_MEMORY
+	if (!cinStorage) return FMV_EOF;
+#endif
 
 	if (cin.currentHandle != handle) {
 		currentHandle = handle;
@@ -1394,6 +1250,10 @@ e_status CIN_RunCinematic (int handle)
 		RoQReset();
 	  } else {
 		RoQShutdown();
+#ifdef PSP_XBOX_MEMORY
+		// A cinematic that ends on its own (OA idlogo.roq) would keep the storage until the next stop.
+		CIN_PSP_ReleaseStorage();
+#endif
 		return FMV_EOF;
 	  }
 	}
@@ -1401,11 +1261,6 @@ e_status CIN_RunCinematic (int handle)
 	return cinTable[currentHandle].status;
 }
 
-/*
-==================
-CIN_PlayCinematic
-==================
-*/
 int CIN_PlayCinematic( const char *arg, int x, int y, int w, int h, int systemBits ) {
 	unsigned short RoQID;
 	char	name[MAX_OSPATH];
@@ -1427,6 +1282,12 @@ int CIN_PlayCinematic( const char *arg, int x, int y, int w, int h, int systemBi
 
 	Com_DPrintf("CIN_PlayCinematic( %s )\n", arg);
 
+#ifdef PSP_XBOX_MEMORY
+	if (!cinStorage && !CIN_PSP_AllocStorage()) {
+		Com_Printf("CIN_PlayCinematic: no memory for %s\n", arg);
+		return -1;
+	}
+#endif
 	Com_Memset(&cin, 0, sizeof(cinematics_t) );
 	currentHandle = CIN_HandleForVideo();
 
@@ -1440,6 +1301,9 @@ int CIN_PlayCinematic( const char *arg, int x, int y, int w, int h, int systemBi
 	if (cinTable[currentHandle].ROQSize<=0) {
 		Com_DPrintf("play(%s), ROQSize<=0\n", arg);
 		cinTable[currentHandle].fileName[0] = 0;
+#ifdef PSP_XBOX_MEMORY
+		CIN_PSP_ReleaseStorage();
+#endif
 		return -1;
 	}
 
@@ -1491,6 +1355,9 @@ int CIN_PlayCinematic( const char *arg, int x, int y, int w, int h, int systemBi
 	Com_DPrintf("trFMV::play(), invalid RoQ ID\n");
 
 	RoQShutdown();
+#ifdef PSP_XBOX_MEMORY
+	CIN_PSP_ReleaseStorage();
+#endif
 	return -1;
 }
 
@@ -1508,13 +1375,7 @@ void CIN_SetLooping(int handle, qboolean loop) {
 	cinTable[handle].looping = loop;
 }
 
-/*
-==================
-CIN_ResampleCinematic
-
-Resample cinematic to 256x256 and store in buf2
-==================
-*/
+// Resample cinematic to 256x256 and store in buf2
 void CIN_ResampleCinematic(int handle, int *buf2) {
 	int ix, iy, *buf3, xm, ym, ll;
 	byte	*buf;
@@ -1568,11 +1429,6 @@ void CIN_ResampleCinematic(int handle, int *buf2) {
 	}
 }
 
-/*
-==================
-CIN_DrawCinematic
-==================
-*/
 void CIN_DrawCinematic (int handle) {
 	float	x, y, w, h;
 	byte	*buf;

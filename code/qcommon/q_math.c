@@ -22,9 +22,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 //
 // q_math.c -- stateless support routines that are included in each code module
 
-// Some of the vector functions are static inline in q_shared.h. q3asm
-// doesn't understand static functions though, so we only want them in
-// one file. That's what this is about.
+// Some vector functions are static inline in q_shared.h; q3asm does not understand static
+// functions, so the VM gets them only from this file.
 #ifdef Q3_VM
 #define __Q3_VM_MATH
 #endif
@@ -52,7 +51,7 @@ vec4_t	colorLtGrey = {0.75f, 0.75f, 0.75f, 1.0f};
 vec4_t	colorMdGrey = {0.5f,  0.5f,  0.5f,  1.0f};
 vec4_t	colorDkGrey = {0.25f, 0.25f, 0.25f, 1.0f};
 
-vec4_t	g_color_table[8] =
+vec4_t	g_color_table[NUMBER_OF_COLORS] =
 {
 	{0.0f, 0.0f, 0.0f, 1.0f},
 	{1.0f, 0.0f, 0.0f, 1.0f},
@@ -62,6 +61,9 @@ vec4_t	g_color_table[8] =
 	{0.0f, 1.0f, 1.0f, 1.0f},
 	{1.0f, 0.0f, 1.0f, 1.0f},
 	{1.0f, 1.0f, 1.0f, 1.0f},
+#ifdef STANDALONEOA
+	{1.0f, 0.43f, 0.0f, 1.0f},
+#endif
 };
 
 
@@ -264,14 +266,8 @@ float NormalizeColor( const vec3_t in, vec3_t out ) {
 }
 
 
-/*
-=====================
-PlaneFromPoints
-
-Returns false if the triangle is degenrate.
-The normal will point out of the clock for clockwise ordered points
-=====================
-*/
+// Returns false if the triangle is degenrate.
+// The normal will point out of the clock for clockwise ordered points
 qboolean PlaneFromPoints( vec4_t plane, const vec3_t a, const vec3_t b, const vec3_t c ) {
 	vec3_t	d1, d2;
 
@@ -286,13 +282,7 @@ qboolean PlaneFromPoints( vec4_t plane, const vec3_t a, const vec3_t b, const ve
 	return qtrue;
 }
 
-/*
-===============
-RotatePointAroundVector
-
-This is not implemented very well...
-===============
-*/
+// This is not implemented very well...
 void RotatePointAroundVector( vec3_t dst, const vec3_t dir, const vec3_t point,
 							 float degrees ) {
 	float	m[3][3];
@@ -349,11 +339,6 @@ void RotatePointAroundVector( vec3_t dst, const vec3_t dir, const vec3_t point,
 	}
 }
 
-/*
-===============
-RotateAroundDirection
-===============
-*/
 void RotateAroundDirection( vec3_t axis[3], float yaw ) {
 
 	// create an arbitrary axis[1] 
@@ -413,11 +398,6 @@ void vectoangles( const vec3_t value1, vec3_t angles ) {
 }
 
 
-/*
-=================
-AnglesToAxis
-=================
-*/
 void AnglesToAxis( const vec3_t angles, vec3_t axis[3] ) {
 	vec3_t	right;
 
@@ -467,14 +447,8 @@ void ProjectPointOnPlane( vec3_t dst, const vec3_t p, const vec3_t normal )
 	dst[2] = p[2] - d * n[2];
 }
 
-/*
-================
-MakeNormalVectors
-
-Given a normalized forward vector, create two
-other perpendicular vectors
-================
-*/
+// Given a normalized forward vector, create two
+// other perpendicular vectors
 void MakeNormalVectors( const vec3_t forward, vec3_t right, vec3_t up) {
 	float		d;
 
@@ -501,9 +475,7 @@ void VectorRotate( vec3_t in, vec3_t matrix[3], vec3_t out )
 //============================================================================
 
 #if !idppc
-/*
-** float q_rsqrt( float number )
-*/
+// float q_rsqrt( float number )
 float Q_rsqrt( float number )
 {
 	floatint_t t;
@@ -530,12 +502,6 @@ float Q_fabs( float f ) {
 
 //============================================================
 
-/*
-===============
-LerpAngle
-
-===============
-*/
 float LerpAngle (float from, float to, float frac) {
 	float	a;
 
@@ -551,13 +517,7 @@ float LerpAngle (float from, float to, float frac) {
 }
 
 
-/*
-=================
-AngleSubtract
-
-Always returns a value from -180 to 180
-=================
-*/
+// Always returns a value from -180 to 180
 float	AngleSubtract( float a1, float a2 ) {
 	float	a;
 
@@ -585,25 +545,13 @@ float	AngleMod(float a) {
 }
 
 
-/*
-=================
-AngleNormalize360
-
-returns angle normalized to the range [0 <= angle < 360]
-=================
-*/
+// returns angle normalized to the range [0 <= angle < 360]
 float AngleNormalize360 ( float angle ) {
 	return (360.0 / 65536) * ((int)(angle * (65536 / 360.0)) & 65535);
 }
 
 
-/*
-=================
-AngleNormalize180
-
-returns angle normalized to the range [-180 < angle <= 180]
-=================
-*/
+// returns angle normalized to the range [-180 < angle <= 180]
 float AngleNormalize180 ( float angle ) {
 	angle = AngleNormalize360( angle );
 	if ( angle > 180.0 ) {
@@ -613,13 +561,7 @@ float AngleNormalize180 ( float angle ) {
 }
 
 
-/*
-=================
-AngleDelta
-
-returns the normalized delta from angle1 to angle2
-=================
-*/
+// returns the normalized delta from angle1 to angle2
 float AngleDelta ( float angle1, float angle2 ) {
 	return AngleNormalize180( angle1 - angle2 );
 }
@@ -628,11 +570,6 @@ float AngleDelta ( float angle1, float angle2 ) {
 //============================================================
 
 
-/*
-=================
-SetPlaneSignbits
-=================
-*/
 void SetPlaneSignbits (cplane_t *out) {
 	int	bits, j;
 
@@ -647,13 +584,7 @@ void SetPlaneSignbits (cplane_t *out) {
 }
 
 
-/*
-==================
-BoxOnPlaneSide
-
-Returns 1, 2, or 1 + 2
-==================
-*/
+// Returns 1, 2, or 1 + 2
 int BoxOnPlaneSide(vec3_t emins, vec3_t emaxs, struct cplane_s *p)
 {
 	float	dist[2];
@@ -691,11 +622,6 @@ int BoxOnPlaneSide(vec3_t emins, vec3_t emaxs, struct cplane_s *p)
 }
 
 
-/*
-=================
-RadiusFromBounds
-=================
-*/
 float RadiusFromBounds( const vec3_t mins, const vec3_t maxs ) {
 	int		i;
 	vec3_t	corner;
@@ -883,30 +809,9 @@ int Q_log2( int val ) {
 
 
 
-/*
-=================
-PlaneTypeForNormal
-=================
-*/
-/*
-int	PlaneTypeForNormal (vec3_t normal) {
-	if ( normal[0] == 1.0 )
-		return PLANE_X;
-	if ( normal[1] == 1.0 )
-		return PLANE_Y;
-	if ( normal[2] == 1.0 )
-		return PLANE_Z;
-	
-	return PLANE_NON_AXIAL;
-}
-*/
+// PlaneTypeForNormal
 
 
-/*
-================
-MatrixMultiply
-================
-*/
 void MatrixMultiply(float in1[3][3], float in2[3][3], float out[3][3]) {
 	out[0][0] = in1[0][0] * in2[0][0] + in1[0][1] * in2[1][0] +
 				in1[0][2] * in2[2][0];
@@ -964,9 +869,7 @@ void AngleVectors( const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up)
 	}
 }
 
-/*
-** assumes "src" is normalized
-*/
+// assumes "src" is normalized
 void PerpendicularVector( vec3_t dst, const vec3_t src )
 {
 	int	pos;
@@ -974,9 +877,7 @@ void PerpendicularVector( vec3_t dst, const vec3_t src )
 	float minelem = 1.0F;
 	vec3_t tempvec;
 
-	/*
-	** find the smallest magnitude axially aligned vector
-	*/
+	// find the smallest magnitude axially aligned vector
 	for ( pos = 0, i = 0; i < 3; i++ )
 	{
 		if ( fabs( src[i] ) < minelem )
@@ -988,24 +889,14 @@ void PerpendicularVector( vec3_t dst, const vec3_t src )
 	tempvec[0] = tempvec[1] = tempvec[2] = 0.0F;
 	tempvec[pos] = 1.0F;
 
-	/*
-	** project the point onto the plane defined by src
-	*/
+	// project the point onto the plane defined by src
 	ProjectPointOnPlane( dst, tempvec, src );
 
-	/*
-	** normalize the result
-	*/
+	// normalize the result
 	VectorNormalize( dst );
 }
 
-/*
-================
-Q_isnan
-
-Don't pass doubles to this
-================
-*/
+// Don't pass doubles to this
 int Q_isnan( float x )
 {
 	floatint_t fi;
@@ -1019,18 +910,7 @@ int Q_isnan( float x )
 //------------------------------------------------------------------------
 
 #ifndef Q3_VM
-/*
-=====================
-Q_acos
-
-the msvc acos doesn't always return a value between -PI and PI:
-
-int i;
-i = 1065353246;
-acos(*(float*) &i) == -1.#IND0
-
-=====================
-*/
+// The msvc acos does not always return a value between -PI and PI (-1.#IND0 for 1065353246).
 float Q_acos(float c) {
 	float angle;
 

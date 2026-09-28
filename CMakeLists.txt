@@ -14,11 +14,8 @@ project(${PROJECT_NAME} VERSION ${PROJECT_VERSION} LANGUAGES C)
 option(BUILD_SERVER "Build dedicated server" ON)
 option(BUILD_CLIENT "Build client" ON)
 option(BUILD_RENDERER_GL1 "Build GL1 renderer" ON)
-# PSP port: the GL2 renderer requires GLSL and the PSP GE has no programmable
-# pipeline of any kind. code/renderergl2 and cmake/renderer_gl2.cmake are removed
-# from this tree; the option is kept (forced OFF) only so the guards in
-# renderer_common.cmake, client.cmake, libraries/*.cmake and platforms/psp.cmake
-# still evaluate. Do not turn it on.
+# PSP: GL2 needs GLSL and the GE has no programmable pipeline; code/renderergl2 is removed, and the
+# option stays forced OFF only for the guards in the other cmake files. Do not turn it on.
 set(BUILD_RENDERER_GL2 OFF)
 option(BUILD_GAME_LIBRARIES "Build game module libraries" ON)
 option(BUILD_GAME_QVMS "Build game module qvms" ON)
@@ -87,9 +84,8 @@ endif()
 
 add_compile_definitions(PRODUCT_VERSION="${PRODUCT_VERSION}")
 
-# A human-chosen label carried into the PSP boot log and performance samples.
-# PRODUCT_VERSION identifies the configured source revision when Git metadata is
-# available; this label distinguishes the deliberately paired A/B artifacts.
+# A human-chosen label for the PSP boot log and performance samples; PRODUCT_VERSION names the
+# source revision, this names the paired A/B artifacts.
 set(PSP_PERF_BUILD_ID "unlabeled" CACHE STRING
     "Identifier printed by PSP performance instrumentation (for example s11e-baseline-a)")
 add_compile_definitions(PSP_PERF_BUILD_ID="${PSP_PERF_BUILD_ID}")
@@ -104,6 +100,7 @@ endif()
 
 set(SOURCE_DIR ${CMAKE_SOURCE_DIR}/code)
 
+include(flavor)
 include(compilers/all)
 include(platforms/all)
 include(libraries/all)

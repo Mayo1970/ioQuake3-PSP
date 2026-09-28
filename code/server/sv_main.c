@@ -55,6 +55,9 @@ cvar_t	*sv_dlRate;
 cvar_t	*sv_minPing;
 cvar_t	*sv_maxPing;
 cvar_t	*sv_gametype;
+#ifdef STANDALONEOA
+cvar_t	*sv_dorestart;	// set by OA's game when map_restart must reload the map
+#endif
 cvar_t	*sv_pure;
 cvar_t	*sv_floodProtect;
 cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
@@ -66,21 +69,9 @@ cvar_t	*sv_banFile;
 serverBan_t serverBans[SERVER_MAXBANS];
 int serverBansCount = 0;
 
-/*
-=============================================================================
+// EVENT MESSAGES
 
-EVENT MESSAGES
-
-=============================================================================
-*/
-
-/*
-===============
-SV_ExpandNewlines
-
-Converts newlines to "\n" so a line prints nicer
-===============
-*/
+// Converts newlines to "\n" so a line prints nicer
 static char	*SV_ExpandNewlines( char *in ) {
 	static	char	string[1024];
 	int		l;
@@ -100,13 +91,8 @@ static char	*SV_ExpandNewlines( char *in ) {
 	return string;
 }
 
-/*
-======================
-SV_ReplacePendingServerCommands
-
-FIXME: This is ugly
-======================
-*/
+// SV_ReplacePendingServerCommands
+// FIXME: This is ugly
 #if 0 // unused
 static int SV_ReplacePendingServerCommands( client_t *client, const char *cmd ) {
 	int i, index, csnum1, csnum2;
@@ -119,11 +105,6 @@ static int SV_ReplacePendingServerCommands( client_t *client, const char *cmd ) 
 			sscanf(client->reliableCommands[ index ], "cs %i", &csnum2);
 			if ( csnum1 == csnum2 ) {
 				Q_strncpyz( client->reliableCommands[ index ], cmd, sizeof( client->reliableCommands[ index ] ) );
-				/*
-				if ( client->netchan.remoteAddress.type != NA_BOT ) {
-					Com_Printf( "WARNING: client %i removed double pending config string %i: %s\n", client-svs.clients, csnum1, cmd );
-				}
-				*/
 				return qtrue;
 			}
 		}
@@ -132,32 +113,20 @@ static int SV_ReplacePendingServerCommands( client_t *client, const char *cmd ) 
 }
 #endif
 
-/*
-======================
-SV_AddServerCommand
-
-The given command will be transmitted to the client, and is guaranteed to
-not have future snapshot_t executed before it is executed
-======================
-*/
+// The given command will be transmitted to the client, and is guaranteed to
+// not have future snapshot_t executed before it is executed
 void SV_AddServerCommand( client_t *client, const char *cmd ) {
 	int		index, i;
 
-	// this is very ugly but it's also a waste to for instance send multiple config string updates
-	// for the same config string index in one snapshot
-//	if ( SV_ReplacePendingServerCommands( client, cmd ) ) {
-//		return;
-//	}
+	// Very ugly, but sending several config string updates for one index in a snapshot is waste.
 
 	// do not send commands until the gamestate has been sent
 	if( client->state < CS_PRIMED )
 		return;
 
 	client->reliableSequence++;
-	// if we would be losing an old command that hasn't been acknowledged,
-	// we must drop the connection
-	// we check == instead of >= so a broadcast print added by SV_DropClient()
-	// doesn't cause a recursive drop client
+	// Losing an unacknowledged old command drops the connection; == not >=, so SV_DropClient()'s
+	// broadcast print does not drop again.
 	if ( client->reliableSequence - client->reliableAcknowledge == MAX_RELIABLE_COMMANDS + 1 ) {
 		if ( client->gamestateMessageNum == -1 )  {
 			// invalid game state message 
@@ -178,15 +147,8 @@ void SV_AddServerCommand( client_t *client, const char *cmd ) {
 }
 
 
-/*
-=================
-SV_SendServerCommand
-
-Sends a reliable command string to be interpreted by 
-the client game module: "cp", "print", "chat", etc
-A NULL client will broadcast to all clients
-=================
-*/
+// Sends a reliable command ("cp", "print", "chat", ...) for the client game module; a NULL
+// client broadcasts to all.
 void QDECL SV_SendServerCommand(client_t *cl, const char *fmt, ...) {
 	va_list		argptr;
 	byte		message[MAX_MSGLEN];
@@ -197,10 +159,7 @@ void QDECL SV_SendServerCommand(client_t *cl, const char *fmt, ...) {
 	Q_vsnprintf ((char *)message, sizeof(message), fmt,argptr);
 	va_end (argptr);
 
-	// Fix to http://aluigi.altervista.org/adv/q3msgboom-adv.txt
-	// The actual cause of the bug is probably further downstream
-	// and should maybe be addressed later, but this certainly
-	// fixes the problem for now
+	// Fix for q3msgboom (aluigi.altervista.org); the real cause is probably further downstream.
 	if ( strlen ((char *)message) > 1022 ) {
 		return;
 	}
@@ -222,25 +181,10 @@ void QDECL SV_SendServerCommand(client_t *cl, const char *fmt, ...) {
 }
 
 
-/*
-==============================================================================
+// MASTER SERVER FUNCTIONS
 
-MASTER SERVER FUNCTIONS
-
-==============================================================================
-*/
-
-/*
-================
-SV_MasterHeartbeat
-
-Send a message to the masters every few minutes to
-let it know we are alive, and log information.
-We will also have a heartbeat sent when a server
-changes from empty to non-empty, and full to non-full,
-but not on every player enter or exit.
-================
-*/
+// Heartbeat to the masters every few minutes, and when the server goes empty to non-empty or
+// full to non-full, not on every enter or exit.
 #define	HEARTBEAT_MSEC	300*1000
 #define	MASTERDNS_MSEC	24*60*60*1000
 void SV_MasterHeartbeat(const char *message)
@@ -331,13 +275,7 @@ void SV_MasterHeartbeat(const char *message)
 	}
 }
 
-/*
-=================
-SV_MasterShutdown
-
-Informs all masters that this server is going down
-=================
-*/
+// Informs all masters that this server is going down
 void SV_MasterShutdown( void ) {
 	// send a heartbeat right now
 	svs.nextHeartbeatTime = -9999;
@@ -352,13 +290,7 @@ void SV_MasterShutdown( void ) {
 }
 
 
-/*
-==============================================================================
-
-CONNECTIONLESS COMMANDS
-
-==============================================================================
-*/
+// CONNECTIONLESS COMMANDS
 
 // This is deliberately quite large to make it more of an effort to DoS
 #ifndef MAX_BUCKETS
@@ -370,11 +302,6 @@ static leakyBucket_t buckets[ MAX_BUCKETS ];
 static leakyBucket_t *bucketHashes[ MAX_HASHES ];
 leakyBucket_t outboundLeakyBucket;
 
-/*
-================
-SVC_HashForAddress
-================
-*/
 static long SVC_HashForAddress( netadr_t address ) {
 	byte 		*ip = NULL;
 	size_t	size = 0;
@@ -397,13 +324,7 @@ static long SVC_HashForAddress( netadr_t address ) {
 	return hash;
 }
 
-/*
-================
-SVC_BucketForAddress
-
-Find or allocate a bucket for an address
-================
-*/
+// Find or allocate a bucket for an address
 static leakyBucket_t *SVC_BucketForAddress( netadr_t address, int burst, int period ) {
 	leakyBucket_t	*bucket = NULL;
 	int						i;
@@ -480,11 +401,6 @@ static leakyBucket_t *SVC_BucketForAddress( netadr_t address, int burst, int per
 	return NULL;
 }
 
-/*
-================
-SVC_RateLimit
-================
-*/
 qboolean SVC_RateLimit( leakyBucket_t *bucket, int burst, int period ) {
 	if ( bucket != NULL ) {
 		int now = Sys_Milliseconds();
@@ -510,28 +426,15 @@ qboolean SVC_RateLimit( leakyBucket_t *bucket, int burst, int period ) {
 	return qtrue;
 }
 
-/*
-================
-SVC_RateLimitAddress
-
-Rate limit for a particular address
-================
-*/
+// Rate limit for a particular address
 qboolean SVC_RateLimitAddress( netadr_t from, int burst, int period ) {
 	leakyBucket_t *bucket = SVC_BucketForAddress( from, burst, period );
 
 	return SVC_RateLimit( bucket, burst, period );
 }
 
-/*
-================
-SVC_Status
-
-Responds with all the info that qplug or qspy can see about the server
-and all connected players.  Used for getting detailed information after
-the simple info query.
-================
-*/
+// All the info qplug or qspy can see about the server and its players; the detailed query that
+// follows the simple info query.
 static void SVC_Status( netadr_t from ) {
 	char	player[1024];
 	char	status[MAX_MSGLEN];
@@ -592,14 +495,8 @@ static void SVC_Status( netadr_t from ) {
 	NET_OutOfBandPrint( NS_SERVER, from, "statusResponse\n%s\n%s", infostring, status );
 }
 
-/*
-================
-SVC_Info
-
-Responds with a short info message that should be enough to determine
-if a user is interested in a server to do a full status
-================
-*/
+// Responds with a short info message that should be enough to determine
+// if a user is interested in a server to do a full status
 void SVC_Info( netadr_t from ) {
 	int		i, count, humans;
 	char	*gamedir;
@@ -624,10 +521,7 @@ void SVC_Info( netadr_t from ) {
 		return;
 	}
 
-	/*
-	 * Check whether Cmd_Argv(1) has a sane length. This was not done in the original Quake3 version which led
-	 * to the Infostring bug discovered by Luigi Auriemma. See http://aluigi.altervista.org/ for the advisory.
-	 */
+	// Check Cmd_Argv(1)'s length: the original missed it (Luigi Auriemma's Infostring bug).
 
 	// A maximum challenge length of 128 should be more than plenty.
 	if(strlen(Cmd_Argv(1)) > 128)
@@ -689,25 +583,12 @@ void SVC_Info( netadr_t from ) {
 	NET_OutOfBandPrint( NS_SERVER, from, "infoResponse\n%s", infostring );
 }
 
-/*
-================
-SVC_FlushRedirect
-
-================
-*/
+// SVC_FlushRedirect
 static void SV_FlushRedirect( char *outputbuf ) {
 	NET_OutOfBandPrint( NS_SERVER, svs.redirectAddress, "print\n%s", outputbuf );
 }
 
-/*
-===============
-SVC_RemoteCommand
-
-An rcon packet arrived from the network.
-Shift down the remaining args
-Redirect all printfs
-===============
-*/
+// An rcon packet from the network: shift down the remaining args and redirect all printfs.
 static void SVC_RemoteCommand( netadr_t from, msg_t *msg ) {
 	qboolean	valid;
 	char		remaining[1024];
@@ -752,10 +633,8 @@ static void SVC_RemoteCommand( netadr_t from, msg_t *msg ) {
 	} else {
 		remaining[0] = 0;
 		
-		// https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=543
-		// get the command directly, "rcon <pass> <command>" to avoid quoting issues
-		// extract the command by walking
-		// since the cmd formatting can fuckup (amount of spaces), using a dumb step by step parsing
+		// Take the command straight from "rcon <pass> <command>" step by step, avoiding quoting and
+		// spacing issues (zerowing bug 543).
 		cmd_aux = Cmd_Cmd();
 		cmd_aux+=4;
 		while(cmd_aux[0]==' ')
@@ -774,16 +653,7 @@ static void SVC_RemoteCommand( netadr_t from, msg_t *msg ) {
 	Com_EndRedirect ();
 }
 
-/*
-=================
-SV_ConnectionlessPacket
-
-A connectionless packet has four leading 0xff
-characters to distinguish it from a game channel.
-Clients that are in the game can still send
-connectionless packets.
-=================
-*/
+// Four leading 0xff characters mark a connectionless packet; in-game clients can still send them.
 static void SV_ConnectionlessPacket( netadr_t from, msg_t *msg ) {
 	char	*s;
 	char	*c;
@@ -816,9 +686,8 @@ static void SV_ConnectionlessPacket( netadr_t from, msg_t *msg ) {
 	} else if (!Q_stricmp(c, "rcon")) {
 		SVC_RemoteCommand( from, msg );
 	} else if (!Q_stricmp(c, "disconnect")) {
-		// if a client starts up a local server, we may see some spurious
-		// server disconnect messages when their new server sees our final
-		// sequenced messages to the old client
+		// A client that starts a local server may see spurious disconnects when the new server gets
+		// our final sequenced messages to the old client.
 	} else {
 		Com_DPrintf ("bad connectionless packet from %s:\n%s\n",
 			NET_AdrToString (from), s);
@@ -827,11 +696,6 @@ static void SV_ConnectionlessPacket( netadr_t from, msg_t *msg ) {
 
 //============================================================================
 
-/*
-=================
-SV_PacketEvent
-=================
-*/
 void SV_PacketEvent( netadr_t from, msg_t *msg ) {
 	int			i;
 	client_t	*cl;
@@ -863,9 +727,7 @@ void SV_PacketEvent( netadr_t from, msg_t *msg ) {
 			continue;
 		}
 
-		// the IP port can't be used to differentiate them, because
-		// some address translating routers periodically change UDP
-		// port assignments
+		// The port cannot tell clients apart: some NAT routers periodically change UDP port assignments.
 		if (cl->netchan.remoteAddress.port != from.port) {
 			Com_Printf( "SV_PacketEvent: fixing up a translated port\n" );
 			cl->netchan.remoteAddress.port = from.port;
@@ -873,9 +735,8 @@ void SV_PacketEvent( netadr_t from, msg_t *msg ) {
 
 		// make sure it is a valid, in sequence packet
 		if (SV_Netchan_Process(cl, msg)) {
-			// zombie clients still need to do the Netchan_Process
-			// to make sure they don't need to retransmit the final
-			// reliable message, but they don't do any other processing
+			// Zombies still run Netchan_Process, so the final reliable message is not retransmitted,
+			// but nothing else.
 			if (cl->state != CS_ZOMBIE) {
 				cl->lastPacketTime = svs.time;	// don't timeout
 				SV_ExecuteClientMessage( cl, msg );
@@ -886,13 +747,7 @@ void SV_PacketEvent( netadr_t from, msg_t *msg ) {
 }
 
 
-/*
-===================
-SV_CalcPings
-
-Updates the cl->ping variables
-===================
-*/
+// Updates the cl->ping variables
 static void SV_CalcPings( void ) {
 	int			i, j;
 	client_t	*cl;
@@ -940,19 +795,8 @@ static void SV_CalcPings( void ) {
 	}
 }
 
-/*
-==================
-SV_CheckTimeouts
-
-If a packet has not been received from a client for timeout->integer 
-seconds, drop the conneciton.  Server time is used instead of
-realtime to avoid dropping the local client while debugging.
-
-When a client is normally dropped, the client_t goes into a zombie state
-for a few seconds to make sure any final reliable message gets resent
-if necessary
-==================
-*/
+// Drops a client silent for timeout->integer seconds (server time, so debugging does not drop
+// the local client); dropped clients stay zombies briefly to resend the last reliable message.
 static void SV_CheckTimeouts( void ) {
 	int		i;
 	client_t	*cl;
@@ -989,11 +833,6 @@ static void SV_CheckTimeouts( void ) {
 }
 
 
-/*
-==================
-SV_CheckPaused
-==================
-*/
 static qboolean SV_CheckPaused( void ) {
 	int		count;
 	client_t	*cl;
@@ -1023,12 +862,7 @@ static qboolean SV_CheckPaused( void ) {
 	return qtrue;
 }
 
-/*
-==================
-SV_FrameMsec
-Return time in millseconds until processing of the next server frame.
-==================
-*/
+// Return time in millseconds until processing of the next server frame.
 int SV_FrameMsec(void)
 {
 	if(sv_fps)
@@ -1046,14 +880,8 @@ int SV_FrameMsec(void)
 		return 1;
 }
 
-/*
-==================
-SV_Frame
-
-Player movement occurs as a result of packet events, which
-happen before SV_Frame is called
-==================
-*/
+// Player movement occurs as a result of packet events, which
+// happen before SV_Frame is called
 void SV_Frame( int msec ) {
 	int		frameMsec;
 	int		startTime;
@@ -1107,10 +935,8 @@ void SV_Frame( int msec ) {
 	if (!com_dedicated->integer) SV_BotFrame (sv.time + sv.timeResidual);
 #endif
 
-	// if time is about to hit the 32nd bit, kick all clients
-	// and clear sv.time, rather
-	// than checking for negative time wraparound everywhere.
-	// 2giga-milliseconds = 23 days, so it won't be too often
+	// Near the 32nd bit (2^31 ms is 23 days), kick all clients and clear sv.time, instead of
+	// checking for negative wraparound everywhere.
 	if ( svs.time > 0x70000000 ) {
 		SV_Shutdown( "Restarting server due to time wrapping" );
 		Cbuf_AddText( va( "map %s\n", Cvar_VariableString( "mapname" ) ) );
@@ -1189,14 +1015,7 @@ void SV_Frame( int msec ) {
 	SV_MasterHeartbeat(HEARTBEAT_FOR_MASTER);
 }
 
-/*
-====================
-SV_RateMsec
-
-Return the number of msec until another message can be sent to
-a client based on its rate settings
-====================
-*/
+// Milliseconds until the client's rate allows another message.
 
 #define UDPIP_HEADER_SIZE 28
 #define UDPIP6_HEADER_SIZE 48
@@ -1239,15 +1058,8 @@ int SV_RateMsec(client_t *client)
 		return rateMsec - rate;
 }
 
-/*
-====================
-SV_SendQueuedPackets
-
-Send download messages and queued packets in the time that we're idle, i.e.
-not computing a server frame or sending client snapshots.
-Return the time in msec until we expect to be called next
-====================
-*/
+// Sends downloads and queued packets while idle (no server frame or snapshots); returns the
+// msec until the next expected call.
 
 int SV_SendQueuedPackets(void)
 {
@@ -1287,13 +1099,8 @@ int SV_SendQueuedPackets(void)
 
 				if(delayT <= deltaT + 1)
 				{
-					// Sending the last round of download messages
-					// took too long for given rate, don't wait for
-					// next round, but always enforce a 1ms delay
-					// between DL message rounds so we don't hog
-					// all of the bandwidth. This will result in an
-					// effective maximum rate of 1MB/s per user, but the
-					// low download window size limits this anyways.
+					// The last download round was too slow for the rate: no wait, but at least 1 ms between rounds
+					// so one user cannot hog the bandwidth (at most 1 MB/s; the window limits it anyway).
 					if(timeVal > 2)
 						timeVal = 2;
 

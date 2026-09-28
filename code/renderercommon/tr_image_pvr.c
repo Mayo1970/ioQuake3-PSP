@@ -184,7 +184,7 @@ static byte *decode(pvr_t *pvr, int offset, qboolean detwiddle, pvr_pixel_func_t
 	unsigned int *rgba32;
 	byte *ret;
 
-	ret = (byte *)ri.Malloc(pvr->width * pvr->height * sizeof(unsigned int));
+	ret = (byte *)R_ImageMalloc(pvr->width * pvr->height * sizeof(unsigned int));
 	rgba32 = (unsigned int *)ret;
 
 	for (y = 0; y < pvr->height; y++)
@@ -200,7 +200,7 @@ static byte *decode(pvr_t *pvr, int offset, qboolean detwiddle, pvr_pixel_func_t
 
 			if (ofs < 0)
 			{
-				ri.Free(ret);
+				R_ImageFree(ret);
 				return NULL;
 			}
 
@@ -221,7 +221,7 @@ static byte *decode_vq(pvr_t *pvr, int offset, qboolean detwiddle, pvr_pixel_fun
 	unsigned char *indices;
 	byte *ret;
 
-	ret = (byte *)ri.Malloc(pvr->width * pvr->height * (pixel_func ? sizeof(unsigned int) : sizeof(unsigned short)));
+	ret = (byte *)R_ImageMalloc(pvr->width * pvr->height * (pixel_func ? sizeof(unsigned int) : sizeof(unsigned short)));
 	rgba32 = (unsigned int *)ret;
 
 	codebook = (unsigned short *)(pvr + 1);
@@ -241,7 +241,7 @@ static byte *decode_vq(pvr_t *pvr, int offset, qboolean detwiddle, pvr_pixel_fun
 
 			if (idx < 0)
 			{
-				ri.Free(ret);
+				R_ImageFree(ret);
 				return NULL;
 			}
 

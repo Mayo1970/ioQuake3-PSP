@@ -56,11 +56,6 @@ float Com_Clamp( float min, float max, float value ) {
 }
 
 
-/*
-============
-COM_SkipPath
-============
-*/
 char *COM_SkipPath (char *pathname)
 {
 	char	*last;
@@ -75,11 +70,6 @@ char *COM_SkipPath (char *pathname)
 	return last;
 }
 
-/*
-============
-COM_GetExtension
-============
-*/
 const char *COM_GetExtension( const char *name )
 {
 	const char *dot = strrchr(name, '.'), *slash;
@@ -90,11 +80,6 @@ const char *COM_GetExtension( const char *name )
 }
 
 
-/*
-============
-COM_StripExtension
-============
-*/
 void COM_StripExtension( const char *in, char *out, int destsize )
 {
 	const char *dot = strrchr(in, '.'), *slash;
@@ -108,13 +93,7 @@ void COM_StripExtension( const char *in, char *out, int destsize )
 		Q_strncpyz(out, in, destsize);
 }
 
-/*
-============
-COM_CompareExtension
-
-string compare the end of the strings and return qtrue if strings match
-============
-*/
+// string compare the end of the strings and return qtrue if strings match
 qboolean COM_CompareExtension(const char *in, const char *ext)
 {
 	int inlen, extlen;
@@ -133,14 +112,8 @@ qboolean COM_CompareExtension(const char *in, const char *ext)
 	return qfalse;
 }
 
-/*
-==================
-COM_DefaultExtension
-
-if path doesn't have an extension, then append
- the specified one (which should include the .)
-==================
-*/
+// if path doesn't have an extension, then append
+// the specified one (which should include the .)
 void COM_DefaultExtension( char *path, int maxSize, const char *extension )
 {
 	const char *dot = strrchr(path, '.'), *slash;
@@ -150,34 +123,8 @@ void COM_DefaultExtension( char *path, int maxSize, const char *extension )
 		Q_strcat(path, maxSize, extension);
 }
 
-/*
-============================================================================
-
-					BYTE ORDER FUNCTIONS
-
-============================================================================
-*/
-/*
-// can't just use function pointers, or dll linkage can
-// mess up when qcommon is included in multiple places
-static short	(*_BigShort) (short l);
-static short	(*_LittleShort) (short l);
-static int		(*_BigLong) (int l);
-static int		(*_LittleLong) (int l);
-static qint64	(*_BigLong64) (qint64 l);
-static qint64	(*_LittleLong64) (qint64 l);
-static float	(*_BigFloat) (const float *l);
-static float	(*_LittleFloat) (const float *l);
-
-short	BigShort(short l){return _BigShort(l);}
-short	LittleShort(short l) {return _LittleShort(l);}
-int		BigLong (int l) {return _BigLong(l);}
-int		LittleLong (int l) {return _LittleLong(l);}
-qint64 	BigLong64 (qint64 l) {return _BigLong64(l);}
-qint64 	LittleLong64 (qint64 l) {return _LittleLong64(l);}
-float	BigFloat (const float *l) {return _BigFloat(l);}
-float	LittleFloat (const float *l) {return _LittleFloat(l);}
-*/
+// BYTE ORDER FUNCTIONS
+// Byte swapping uses no function pointers: dll linkage breaks when qcommon is in several places.
 
 void CopyShortSwap(void *dest, void *src)
 {
@@ -264,50 +211,9 @@ float FloatNoSwap (const float *f)
 	return *f;
 }
 
-/*
-================
-Swap_Init
-================
-*/
-/*
-void Swap_Init (void)
-{
-	byte	swaptest[2] = {1,0};
+// Swap_Init
 
-// set the byte swapping variables in a portable manner	
-	if ( *(short *)swaptest == 1)
-	{
-		_BigShort = ShortSwap;
-		_LittleShort = ShortNoSwap;
-		_BigLong = LongSwap;
-		_LittleLong = LongNoSwap;
-		_BigLong64 = Long64Swap;
-		_LittleLong64 = Long64NoSwap;
-		_BigFloat = FloatSwap;
-		_LittleFloat = FloatNoSwap;
-	}
-	else
-	{
-		_BigShort = ShortNoSwap;
-		_LittleShort = ShortSwap;
-		_BigLong = LongNoSwap;
-		_LittleLong = LongSwap;
-		_BigLong64 = Long64NoSwap;
-		_LittleLong64 = Long64Swap;
-		_BigFloat = FloatNoSwap;
-		_LittleFloat = FloatSwap;
-	}
-
-}
-*/
-
-/*
-============================================================================
-
-PARSING
-
-============================================================================
-*/
+// PARSING
 
 static	char	com_token[MAX_TOKEN_CHARS];
 static	char	com_parsename[MAX_TOKEN_CHARS];
@@ -360,18 +266,8 @@ void COM_ParseWarning( char *format, ... )
 	Com_Printf("WARNING: %s, line %d: %s\n", com_parsename, COM_GetCurrentParseLine(), string);
 }
 
-/*
-==============
-COM_Parse
-
-Parse a token out of a string
-Will never return NULL, just empty strings
-
-If "allowLineBreaks" is qtrue then an empty
-string will be returned if the next token is
-a newline.
-==============
-*/
+// COM_Parse returns a token from a string, never NULL (an empty string instead); with
+// allowLineBreaks qtrue, a newline before the next token returns an empty string.
 static char *SkipWhitespace( char *data, qboolean *hasNewLines ) {
 	int c;
 
@@ -570,11 +466,6 @@ char *COM_ParseExt( char **data_p, qboolean allowLineBreaks )
 	return com_token;
 }
 
-/*
-==================
-COM_MatchToken
-==================
-*/
 void COM_MatchToken( char **buf_p, char *match ) {
 	char	*token;
 
@@ -585,15 +476,8 @@ void COM_MatchToken( char **buf_p, char *match ) {
 }
 
 
-/*
-=================
-SkipBracedSection
-
-The next token should be an open brace or set depth to 1 if already parsed it.
-Skips until a matching close brace is found.
-Internal brace depths are properly skipped.
-=================
-*/
+// The next token is an open brace, or depth is 1 if it was already parsed; skips to the
+// matching close brace, nested braces included.
 qboolean SkipBracedSection (char **program, int depth) {
 	char			*token;
 
@@ -612,11 +496,6 @@ qboolean SkipBracedSection (char **program, int depth) {
 	return ( depth == 0 );
 }
 
-/*
-=================
-SkipRestOfLine
-=================
-*/
 void SkipRestOfLine ( char **data ) {
 	char	*p;
 	int		c;
@@ -675,11 +554,6 @@ void Parse3DMatrix (char **buf_p, int z, int y, int x, float *m) {
 	COM_MatchToken( buf_p, ")" );
 }
 
-/*
-===================
-Com_HexStrToInt
-===================
-*/
 int Com_HexStrToInt( const char *str )
 {
 	if ( !str )
@@ -714,13 +588,7 @@ int Com_HexStrToInt( const char *str )
 	return -1;
 }
 
-/*
-============================================================================
-
-					LIBRARY REPLACEMENT FUNCTIONS
-
-============================================================================
-*/
+// LIBRARY REPLACEMENT FUNCTIONS
 
 int Q_isprint( int c )
 {
@@ -769,15 +637,8 @@ qboolean Q_isintegral( float f )
 }
 
 #ifdef _WIN32
-/*
-=============
-Q_vsnprintf
-
-Special wrapper function for Microsoft's broken _vsnprintf() function.
-MinGW comes with its own vsnprintf() which is not broken. mingw-w64
-however, uses Microsoft's broken _vsnprintf() function.
-=============
-*/
+// Wrapper for Microsoft's broken _vsnprintf(), which mingw-w64 uses; MinGW's own vsnprintf
+// is fine.
 
 int Q_vsnprintf(char *str, size_t size, const char *format, va_list ap)
 {
@@ -787,12 +648,8 @@ int Q_vsnprintf(char *str, size_t size, const char *format, va_list ap)
 
 	if(retval < 0 || retval == size)
 	{
-		// Microsoft doesn't adhere to the C99 standard of vsnprintf,
-		// which states that the return value must be the number of
-		// bytes written if the output string had sufficient length.
-		//
-		// Obviously we cannot determine that value from Microsoft's
-		// implementation, so we have no choice but to return size.
+		// Microsoft ignores C99, which returns the length the full output needs; that value cannot
+		// be known here, so return size.
 		
 		str[size - 1] = '\0';
 		return size;
@@ -802,13 +659,24 @@ int Q_vsnprintf(char *str, size_t size, const char *format, va_list ap)
 }
 #endif
 
-/*
-=============
-Q_strncpyz
- 
-Safe strncpy that ensures a trailing zero
-=============
-*/
+// Q_strncpyz
+// Safe strncpy that ensures a trailing zero
+#ifdef STANDALONEOA
+// OA engine fix: bg_lib's forward copy, defined when source and destination overlap.
+char *Q_strncpy( char *strDest, const char *strSource, size_t count ) {
+	char *s = strDest;
+
+	while ( *strSource && count ) {
+		*s++ = *strSource++;
+		count--;
+	}
+	while ( count-- ) {
+		*s++ = 0;
+	}
+	return strDest;
+}
+#endif
+
 void Q_strncpyz( char *dest, const char *src, int destsize ) {
   if ( !dest ) {
     Com_Error( ERR_FATAL, "Q_strncpyz: NULL dest" );
@@ -817,10 +685,14 @@ void Q_strncpyz( char *dest, const char *src, int destsize ) {
 		Com_Error( ERR_FATAL, "Q_strncpyz: NULL src" );
 	}
 	if ( destsize < 1 ) {
-		Com_Error(ERR_FATAL,"Q_strncpyz: destsize < 1" ); 
+		Com_Error(ERR_FATAL,"Q_strncpyz: destsize < 1" );
 	}
 
+#ifdef STANDALONEOA
+	Q_strncpy( dest, src, destsize-1 );
+#else
 	strncpy( dest, src, destsize-1 );
+#endif
   dest[destsize-1] = 0;
 }
                  
@@ -920,9 +792,7 @@ void Q_strcat( char *dest, int size, const char *src ) {
 	Q_strncpyz( dest + l1, src, size - l1 );
 }
 
-/*
-* Find the first occurrence of find in s.
-*/
+// Find the first occurrence of find in s.
 const char *Q_stristr( const char *s, const char *find)
 {
   char c, sc;
@@ -1025,14 +895,8 @@ int QDECL Com_sprintf(char *dest, int size, const char *fmt, ...)
 	return len;
 }
 
-/*
-============
-va
-
-does a varargs printf into a temp buffer, so I don't need to have
-varargs versions of all text functions.
-============
-*/
+// does a varargs printf into a temp buffer, so I don't need to have
+// varargs versions of all text functions.
 char	* QDECL va( char *format, ... ) {
 	va_list		argptr;
 	static char string[2][32000]; // in case va is called by nested functions
@@ -1049,13 +913,7 @@ char	* QDECL va( char *format, ... ) {
 	return buf;
 }
 
-/*
-============
-Com_TruncateLongString
-
-Assumes buffer is atleast TRUNCATE_LENGTH big
-============
-*/
+// Assumes buffer is atleast TRUNCATE_LENGTH big
 void Com_TruncateLongString( char *buffer, const char *s )
 {
 	int length = strlen( s );
@@ -1070,23 +928,9 @@ void Com_TruncateLongString( char *buffer, const char *s )
 	}
 }
 
-/*
-=====================================================================
+// INFO STRINGS
 
-  INFO STRINGS
-
-=====================================================================
-*/
-
-/*
-===============
-Info_ValueForKey
-
-Searches the string for the given
-key and returns the associated value, or an empty string.
-FIXME: overflow check?
-===============
-*/
+// Returns the value for key in the info string, or an empty string. FIXME: overflow check?
 char *Info_ValueForKey( const char *s, const char *key ) {
 	char	pkey[BIG_INFO_KEY];
 	static	char value[2][BIG_INFO_VALUE];	// use two buffers so compares
@@ -1137,13 +981,7 @@ char *Info_ValueForKey( const char *s, const char *key ) {
 }
 
 
-/*
-===================
-Info_NextPair
-
-Used to itterate through all the key/value pairs in an info string
-===================
-*/
+// Used to itterate through all the key/value pairs in an info string
 void Info_NextPair( const char **head, char *key, char *value ) {
 	char	*o;
 	const char	*s;
@@ -1178,11 +1016,6 @@ void Info_NextPair( const char **head, char *key, char *value ) {
 }
 
 
-/*
-===================
-Info_RemoveKey
-===================
-*/
 void Info_RemoveKey( char *s, const char *key ) {
 	char	*start;
 	char	pkey[MAX_INFO_KEY];
@@ -1234,11 +1067,6 @@ void Info_RemoveKey( char *s, const char *key ) {
 
 }
 
-/*
-===================
-Info_RemoveKey_Big
-===================
-*/
 void Info_RemoveKey_Big( char *s, const char *key ) {
 	char	*start;
 	char	pkey[BIG_INFO_KEY];
@@ -1292,14 +1120,8 @@ void Info_RemoveKey_Big( char *s, const char *key ) {
 
 
 
-/*
-==================
-Info_Validate
-
-Some characters are illegal in info strings because they
-can mess up the server's parsing
-==================
-*/
+// Some characters are illegal in info strings because they
+// can mess up the server's parsing
 qboolean Info_Validate( const char *s ) {
 	const char* ch = s;
 
@@ -1320,13 +1142,7 @@ qboolean Info_Validate( const char *s ) {
 	return qtrue;
 }
 
-/*
-==================
-Info_SetValueForKey
-
-Changes or adds a key/value pair
-==================
-*/
+// Changes or adds a key/value pair
 void Info_SetValueForKey( char *s, const char *key, const char *value ) {
 	char	newi[MAX_INFO_STRING];
 	const char* blacklist = "\\;\"";
@@ -1360,14 +1176,8 @@ void Info_SetValueForKey( char *s, const char *key, const char *value ) {
 	strcpy (s, newi);
 }
 
-/*
-==================
-Info_SetValueForKey_Big
-
-Changes or adds a key/value pair
-Includes and retains zero-length values
-==================
-*/
+// Changes or adds a key/value pair
+// Includes and retains zero-length values
 void Info_SetValueForKey_Big( char *s, const char *key, const char *value ) {
 	char	newi[BIG_INFO_STRING];
 	const char* blacklist = "\\;\"";
@@ -1405,11 +1215,6 @@ void Info_SetValueForKey_Big( char *s, const char *key, const char *value ) {
 
 //====================================================================
 
-/*
-==================
-Com_CharIsOneOfCharset
-==================
-*/
 static qboolean Com_CharIsOneOfCharset( char c, char *set )
 {
 	int i;
@@ -1423,11 +1228,6 @@ static qboolean Com_CharIsOneOfCharset( char c, char *set )
 	return qfalse;
 }
 
-/*
-==================
-Com_SkipCharset
-==================
-*/
 char *Com_SkipCharset( char *s, char *sep )
 {
 	char	*p = s;
@@ -1443,11 +1243,6 @@ char *Com_SkipCharset( char *s, char *sep )
 	return p;
 }
 
-/*
-==================
-Com_SkipTokens
-==================
-*/
 char *Com_SkipTokens( char *s, int numTokens, char *sep )
 {
 	int		sepCount = 0;

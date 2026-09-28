@@ -31,8 +31,13 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 // includes for the OGG codec
 #include <errno.h>
+#ifdef __PSP__
+// Tremor, pspdev's integer decoder: libvorbis's ov_read rounds each sample through soft-float double.
+#include <tremor/ivorbisfile.h>
+#else
 #define OV_EXCLUDE_STATIC_CALLBACKS
 #include <vorbis/vorbisfile.h>
+#endif
 
 // The OGG codec can return the samples in a number of different formats,
 // we use the standard signed short format.
@@ -220,11 +225,6 @@ const ov_callbacks S_OGG_Callbacks =
  &S_OGG_Callback_tell
 };
 
-/*
-=================
-S_OGG_CodecOpenStream
-=================
-*/
 snd_stream_t *S_OGG_CodecOpenStream(const char *filename)
 {
 	snd_stream_t *stream;
@@ -325,11 +325,6 @@ snd_stream_t *S_OGG_CodecOpenStream(const char *filename)
 	return stream;
 }
 
-/*
-=================
-S_OGG_CodecCloseStream
-=================
-*/
 void S_OGG_CodecCloseStream(snd_stream_t *stream)
 {
 	// check if input is valid
@@ -348,11 +343,6 @@ void S_OGG_CodecCloseStream(snd_stream_t *stream)
 	S_CodecUtilClose(&stream);
 }
 
-/*
-=================
-S_OGG_CodecReadStream
-=================
-*/
 int S_OGG_CodecReadStream(snd_stream_t *stream, int bytes, void *buffer)
 {
 	// buffer handling
@@ -362,12 +352,14 @@ int S_OGG_CodecReadStream(snd_stream_t *stream, int bytes, void *buffer)
 	// Bitstream for the decoder
 	int BS = 0;
 
+#ifndef __PSP__
 	// big endian machines want their samples in big endian order
 	int IsBigEndian = 0;
 
 #	ifdef Q3_BIG_ENDIAN
 	IsBigEndian = 1;
 #	endif // Q3_BIG_ENDIAN
+#endif
 
 	// check if input is valid
 	if(!(stream && buffer))
@@ -388,7 +380,12 @@ int S_OGG_CodecReadStream(snd_stream_t *stream, int bytes, void *buffer)
 	while(-1)
 	{
 		// read some bytes from the OGG codec
+#ifdef __PSP__
+		// Tremor always returns signed 16-bit samples in host order.
+		c = ov_read((OggVorbis_File *) stream->ptr, bufPtr, bytesLeft, &BS);
+#else
 		c = ov_read((OggVorbis_File *) stream->ptr, bufPtr, bytesLeft, IsBigEndian, OGG_SAMPLEWIDTH, 1, &BS);
+#endif
 		
 		// no more bytes are left
 		if(c <= 0)
@@ -410,14 +407,8 @@ int S_OGG_CodecReadStream(snd_stream_t *stream, int bytes, void *buffer)
 	return bytesRead;
 }
 
-/*
-=====================================================================
-S_OGG_CodecLoad
-
-We handle S_OGG_CodecLoad as a special case of the streaming functions 
-where we read the whole stream at once.
-======================================================================
-*/
+// We handle S_OGG_CodecLoad as a special case of the streaming functions
+// where we read the whole stream at once.
 void *S_OGG_CodecLoad(const char *filename, snd_info_t *info)
 {
 	snd_stream_t *stream;

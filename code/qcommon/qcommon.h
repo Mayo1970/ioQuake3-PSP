@@ -29,9 +29,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 //============================================================================
 
-//
 // msg.c
-//
 typedef struct {
 	qboolean	allowoverflow;	// if false, do a Com_Error
 	qboolean	overflowed;		// set to true if the buffer size failed (with allowoverflow set)
@@ -49,10 +47,8 @@ void MSG_Clear (msg_t *buf);
 void MSG_WriteData (msg_t *buf, const void *data, int length);
 void MSG_Bitstream( msg_t *buf );
 
-// TTimo
-// copy a msg_t in case we need to store it as is for a bit
-// (as I needed this to keep an msg_t from a static var for later use)
-// sets data buffer as MSG_Init does prior to do the copy
+// TTimo: copies a msg_t (setting its data buffer as MSG_Init does), to keep a message
+// from a static var for later use.
 void MSG_Copy(msg_t *buf, byte *data, int length, msg_t *src);
 
 struct usercmd_s;
@@ -104,13 +100,7 @@ void MSG_ReportChangeVectors_f( void );
 
 //============================================================================
 
-/*
-==============================================================
-
-NET
-
-==============================================================
-*/
+// NET
 
 #define NET_ENABLEV4            0x01
 #define NET_ENABLEV6            0x02
@@ -190,9 +180,7 @@ void		NET_Sleep(int msec);
 
 #define NETCHAN_GENCHECKSUM(challenge, sequence) ((challenge) ^ ((sequence) * (challenge)))
 
-/*
-Netchan handles packet fragmentation and out of order / duplicate suppression
-*/
+// Netchan handles packet fragmentation and out of order / duplicate suppression
 
 typedef struct {
 	netsrc_t	sock;
@@ -236,16 +224,15 @@ void Netchan_TransmitNextFragment( netchan_t *chan );
 qboolean Netchan_Process( netchan_t *chan, msg_t *msg );
 
 
-/*
-==============================================================
-
-PROTOCOL
-
-==============================================================
-*/
+// PROTOCOL
 
 #define	PROTOCOL_VERSION	71
+#ifdef STANDALONEOA
+// OA servers speak the legacy netchan at 71.
+#define PROTOCOL_LEGACY_VERSION	71
+#else
 #define PROTOCOL_LEGACY_VERSION	68
+#endif
 // 1.31 - 67
 
 // maintain a list of compatible protocols for demo playing
@@ -261,6 +248,9 @@ extern int demo_protocols[];
 #endif
 
 #ifndef STANDALONE
+  #ifdef STANDALONEOA
+    #define AUTHORIZE_SERVER_NAME	"dpmaster.deathmask.net"
+  #endif
   #ifndef AUTHORIZE_SERVER_NAME
     #define	AUTHORIZE_SERVER_NAME	"authorize.quake3arena.com"
   #endif
@@ -273,14 +263,11 @@ extern int demo_protocols[];
 #define	PORT_UPDATE			27951
 #define	PORT_SERVER			27960
 #define	NUM_SERVER_PORTS	4		// broadcast scan this many ports after
-									// PORT_SERVER so a single machine can
-									// run multiple servers
+									// PORT_SERVER, so one machine can run several servers
 
 
 // the svc_strings[] array in cl_parse.c should mirror this
-//
 // server to client
-//
 enum svc_ops_e {
 	svc_bad,
 	svc_nop,
@@ -298,9 +285,7 @@ enum svc_ops_e {
 };
 
 
-//
 // client to server
-//
 enum clc_ops_e {
 	clc_bad,
 	clc_nop, 		
@@ -314,13 +299,7 @@ enum clc_ops_e {
 	clc_voipOpus,    //
 };
 
-/*
-==============================================================
-
-VIRTUAL MACHINE
-
-==============================================================
-*/
+// VIRTUAL MACHINE
 
 typedef struct vm_s vm_t;
 
@@ -378,23 +357,11 @@ static ID_INLINE float _vmf(intptr_t x)
 #define	VMF(x)	_vmf(args[x])
 
 
-/*
-==============================================================
+// CMD
+// Command text buffering and command execution
 
-CMD
-
-Command text buffering and command execution
-
-==============================================================
-*/
-
-/*
-
-Any number of commands can be added in a frame, from several different sources.
-Most commands come from either keybindings or console line input, but entire text
-files can be execed.
-
-*/
+// Any number of commands can be added in a frame, from keybindings, console input or
+// whole execed text files.
 
 void Cbuf_Init (void);
 // allocates an initial text buffer that will grow as needed
@@ -406,30 +373,21 @@ void Cbuf_ExecuteText( int exec_when, const char *text );
 // this can be used in place of either Cbuf_AddText or Cbuf_InsertText
 
 void Cbuf_Execute (void);
-// Pulls off \n terminated lines of text from the command buffer and sends
-// them through Cmd_ExecuteString.  Stops when the buffer is empty.
-// Normally called once per frame, but may be explicitly invoked.
-// Do not call inside a command function, or current args will be destroyed.
+// Runs \n terminated lines through Cmd_ExecuteString until the buffer is empty, normally once
+// per frame; never from inside a command function, or its args are destroyed.
 
 //===========================================================================
 
-/*
-
-Command execution takes a null terminated string, breaks it into tokens,
-then searches for a command or variable that matches the first token.
-
-*/
+// Command execution takes a null terminated string, breaks it into tokens,
+// then searches for a command or variable that matches the first token.
 
 typedef void (*xcommand_t) (void);
 
 void	Cmd_Init (void);
 
 void	Cmd_AddCommand( const char *cmd_name, xcommand_t function );
-// called by the init functions of other parts of the program to
-// register commands and functions to call for them.
-// The cmd_name is referenced later, so it should not be in temp memory
-// if function is NULL, the command will be forwarded to the server
-// as a clc_clientCommand instead of executed locally
+// Registers a command; cmd_name must not be in temp memory. A NULL function forwards the
+// command to the server as a clc_clientCommand.
 
 void	Cmd_RemoveCommand( const char *cmd_name );
 
@@ -453,9 +411,8 @@ char	*Cmd_ArgsFrom( int arg );
 void	Cmd_ArgsBuffer( char *buffer, int bufferLength );
 char	*Cmd_Cmd (void);
 void	Cmd_Args_Sanitize( void );
-// The functions that execute commands get their parameters with these
-// functions. Cmd_Argv () will return an empty string, not a NULL
-// if arg > argc, so string operations are allways safe.
+// Command functions read their parameters with these; Cmd_Argv returns "", not NULL, past argc,
+// so string operations are always safe.
 
 void	Cmd_TokenizeString( const char *text );
 void	Cmd_TokenizeStringIgnoreQuotes( const char *text_in );
@@ -467,38 +424,14 @@ void	Cmd_ExecuteString( const char *text );
 // as if it was typed at the console
 
 
-/*
-==============================================================
+// CVAR
 
-CVAR
-
-==============================================================
-*/
-
-/*
-
-cvar_t variables are used to hold scalar or string variables that can be changed
-or displayed at the console or prog code as well as accessed directly
-in C code.
-
-The user can access cvars from the console in three ways:
-r_draworder			prints the current value
-r_draworder 0		sets the current value to 0
-set r_draworder 0	as above, but creates the cvar if not present
-
-Cvars are restricted from having the same names as commands to keep this
-interface from being ambiguous.
-
-The are also occasionally used to communicated information between different
-modules of the program.
-
-*/
+// Cvars: scalar or string values set or shown at the console ("name", "name 0", "set name 0" creates
+// it) and read directly in C; they cannot share a command's name.
 
 cvar_t *Cvar_Get( const char *var_name, const char *value, int flags );
-// creates the variable if it doesn't exist, or returns the existing one
-// if it exists, the value will not be changed, but flags will be ORed in
-// that allows variables to be unarchived without needing bitflags
-// if value is "", the value will not override a previously set value.
+// Creates the variable or returns the existing one, whose value stays and whose flags are ORed
+// in; an empty value never overrides a previously set value.
 
 void	Cvar_Register( vmCvar_t *vmCvar, const char *varName, const char *defaultValue, int flags );
 // basically a slightly modified Cvar_Get for the interpreted modules
@@ -543,9 +476,8 @@ void	Cvar_SetCheatState( void );
 // reset all testing vars to a safe value
 
 qboolean Cvar_Command( void );
-// called by Cmd_ExecuteString when Cmd_Argv(0) doesn't match a known
-// command.  Returns true if the command was a variable reference that
-// was handled. (print or change)
+// Called by Cmd_ExecuteString for an unknown command; returns true if it was a variable
+// reference that was printed or changed.
 
 void 	Cvar_WriteVariables( fileHandle_t f );
 // writes lines containing "set variable value" for all variables
@@ -567,21 +499,10 @@ void	Cvar_Restart_f( void );
 void Cvar_CompleteCvarName( char *args, int argNum );
 
 extern	int			cvar_modifiedFlags;
-// whenever a cvar is modifed, its flags will be OR'd into this, so
-// a single check can determine if any CVAR_USERINFO, CVAR_SERVERINFO,
-// etc, variables have been modified since the last check.  The bit
-// can then be cleared to allow another change detection.
+// Every cvar change ORs its flags in here, so one check finds changed CVAR_USERINFO,
+// CVAR_SERVERINFO, etc.; clear the bit to detect the next change.
 
-/*
-==============================================================
-
-FILESYSTEM
-
-No stdio calls should be used by any part of the game, because
-we need to deal with all sorts of directory and seperator char
-issues.
-==============================================================
-*/
+// Filesystem: no game code may use stdio, because of the directory and separator char issues.
 
 // referenced flags
 // these are in loop specific order so don't change the order
@@ -611,9 +532,8 @@ void	FS_UpdateChecksumFeed( int checksumFeed );
 // shutdown and restart the filesystem so changes to fs_gamedir can take effect
 
 char	**FS_ListFiles( const char *directory, const char *extension, int *numfiles );
-// directory should not have either a leading or trailing /
-// if extension is "/", only subdirectories will be returned
-// the returned files will not include any directories or /
+// No leading or trailing / in directory; extension "/" returns only subdirectories, and the
+// returned names never include directories or /.
 
 void	FS_FreeFileList( char **list );
 
@@ -622,6 +542,9 @@ qboolean FS_FileExists_HomeData( const char *file );
 qboolean FS_CreatePath (const char *OSPath);
 
 int FS_FindVM(void **startSearch, char *found, int foundlen, const char *name, int enableDll);
+#if defined(PSP_STATIC_GAME_MODULES) && defined(STANDALONEOA)
+qboolean FS_PSP_StockVM(const char *name);
+#endif
 
 char	*FS_BaseDir_BuildOSPath( const char *base, const char *qpath );
 char	*FS_BuildOSPath( const char *base, const char *game, const char *qpath );
@@ -647,11 +570,8 @@ fileHandle_t FS_BaseDir_FOpenFileWrite_HomeState( const char *filename );
 long		FS_BaseDir_FOpenFileRead( const char *filename, fileHandle_t *fp );
 void	FS_BaseDir_Rename_HomeData( const char *from, const char *to, qboolean safe );
 long		FS_FOpenFileRead( const char *qpath, fileHandle_t *file, qboolean uniqueFILE );
-// if uniqueFILE is true, then a new FILE will be fopened even if the file
-// is found in an already open pak file.  If uniqueFILE is false, you must call
-// FS_FCloseFile instead of fclose, otherwise the pak FILE would be improperly closed
-// It is generally safe to always set uniqueFILE to true, because the majority of
-// file IO goes through FS_ReadFile, which Does The Right Thing already.
+// uniqueFILE opens a new FILE even inside an open pak; without it, close with FS_FCloseFile, not
+// fclose. Setting it is usually safe: most file IO goes through FS_ReadFile anyway.
 
 int		FS_FileIsInPAK(const char *filename, int *pChecksum );
 // returns 1 if a file is in the PAK file, otherwise -1
@@ -666,12 +586,8 @@ void	FS_FCloseFile( fileHandle_t f );
 
 long	FS_ReadFileDir(const char *qpath, void *searchPath, qboolean unpure, void **buffer);
 long	FS_ReadFile(const char *qpath, void **buffer);
-// returns the length of the file
-// a null buffer will just return the file length without loading
-// as a quick check for existence. -1 length == not present
-// A 0 byte will always be appended at the end, so string ops are safe.
-// the buffer should be considered read-only, because it may be cached
-// for other uses.
+// Returns the length, -1 if absent; a NULL buffer only checks existence. A 0 byte is appended
+// so string ops are safe; treat the buffer as read-only, it may be cached.
 
 void	FS_ForceFlush( fileHandle_t f );
 // forces flush on files we're writing to.
@@ -710,19 +626,16 @@ const char *FS_LoadedPakPureChecksums( void );
 const char *FS_ReferencedPakNames( void );
 const char *FS_ReferencedPakChecksums( void );
 const char *FS_ReferencedPakPureChecksums( void );
-// Returns a space separated string containing the checksums of all loaded 
-// AND referenced pk3 files. Servers with sv_pure set will get this string 
-// back from clients for pure validation 
+// Space separated checksums of all loaded AND referenced pk3s; clients send it to sv_pure
+// servers for pure validation.
 
 void FS_ClearPakReferences( int flags );
 // clears referenced booleans on loaded pk3s
 
 void FS_PureServerSetReferencedPaks( const char *pakSums, const char *pakNames );
 void FS_PureServerSetLoadedPaks( const char *pakSums, const char *pakNames );
-// If the string is empty, all data sources will be allowed.
-// If not empty, only pk3 files that match one of the space
-// separated checksums will be checked for files, with the
-// sole exception of .cfg files.
+// Empty: all data sources allowed. Otherwise only pk3s matching a listed checksum are searched,
+// except for .cfg files.
 
 qboolean FS_CheckDirTraversal(const char *checkdir);
 qboolean FS_InvalidGameDir(const char *gamedir);
@@ -738,13 +651,7 @@ void	FS_FilenameCompletion( const char *dir, const char *ext, char *filter,
 const char *FS_GetCurrentGameDir(void);
 qboolean FS_Which(const char *filename, void *searchPath);
 
-/*
-==============================================================
-
-Edit fields and command line history/completion
-
-==============================================================
-*/
+// Edit fields and command line history/completion
 
 #define	MAX_EDIT_LINE	256
 typedef struct {
@@ -764,13 +671,7 @@ void Field_CompleteCommand( char *cmd,
 		qboolean doCommands, qboolean doCvars );
 void Field_CompletePlayerName( const char **names, int count );
 
-/*
-==============================================================
-
-MISC
-
-==============================================================
-*/
+// MISC
 
 // centralizing the declarations for cl_cdkey
 // https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=470
@@ -838,9 +739,8 @@ void		Com_RunAndTimeServerPacket(netadr_t *evFrom, msg_t *buf);
 qboolean	Com_IsVoipTarget(uint8_t *voipTargets, int voipTargetsSize, int clientNum);
 
 void		Com_StartupVariable( const char *match );
-// checks for and removes command line "+set var arg" constructs
-// if match is NULL, all set commands will be executed, otherwise
-// only a set with the exact name.  Only used during startup.
+// Runs and removes command line "+set var arg" constructs, all or only the one named match;
+// only used during startup.
 
 qboolean		Com_PlayerNameToFieldString( char *str, int length, const char *name );
 qboolean		Com_FieldStringToPlayerName( char *name, int length, const char *rawname );
@@ -906,24 +806,8 @@ typedef enum {
 	TAG_STATIC
 } memtag_t;
 
-/*
-
---- low memory ----
-server vm
-server clipmap
----mark---
-renderer initialization (shaders, etc)
-UI vm
-cgame vm
-renderer map
-renderer models
-
----free---
-
-temp file loading
---- high memory ---
-
-*/
+// Hunk layout, low to high: server vm, server clipmap, mark, renderer init (shaders), UI vm,
+// cgame vm, renderer map and models, free space, temp file loading.
 
 #if !defined(NDEBUG) && !defined(BSPC)
 	#define ZONE_DEBUG
@@ -964,17 +848,9 @@ void Com_Frame( void );
 void Com_Shutdown( void );
 
 
-/*
-==============================================================
+// CLIENT / SERVER SYSTEMS
 
-CLIENT / SERVER SYSTEMS
-
-==============================================================
-*/
-
-//
 // client interface
-//
 void CL_InitKeyCommands( void );
 // the keyboard binding interface must be setup before execing
 // config files, but the rest of client startup will happen later
@@ -998,15 +874,11 @@ void CL_PacketEvent( netadr_t from, msg_t *msg );
 void CL_ConsolePrint( char *text );
 
 void CL_MapLoading( void );
-// do a screen update before starting to load a map
-// when the server is going to load a new map, the entire hunk
-// will be cleared, so the client must shutdown cgame, ui, and
-// the renderer
+// Updates the screen before a map load; the load clears the whole hunk, so cgame, ui and the
+// renderer must shut down first.
 
 void	CL_ForwardCommandToServer( const char *string );
-// adds the current command line as a clc_clientCommand to the client message.
-// things like godmode, noclip, etc, are commands directed to the server,
-// so when they are typed in at the console, they will need to be forwarded.
+// console commands such as god and noclip are server commands and must be forwarded.
 
 void CL_CDDialog( void );
 // bring up the "need a cd to play" dialog
@@ -1040,9 +912,7 @@ void SCR_DebugGraph (float value);	// FIXME: move logging to common?
 // AVI files have the start of pixel lines 4 byte-aligned
 #define AVI_LINE_PADDING 4
 
-//
 // server interface
-//
 void SV_Init( void );
 void SV_Shutdown( char *finalmsg );
 void SV_Frame( int msec );
@@ -1051,27 +921,17 @@ int SV_FrameMsec(void);
 qboolean SV_GameCommand( void );
 int SV_SendQueuedPackets(void);
 
-//
 // UI interface
-//
 qboolean UI_GameCommand( void );
 qboolean UI_usesUniqueCDKey(void);
 
-//
 // input interface
-//
 void IN_Init( void *windowData );
 void IN_Frame( void );
 void IN_Shutdown( void );
 void IN_Restart( void );
 
-/*
-==============================================================
-
-NON-PORTABLE SYSTEM SERVICES
-
-==============================================================
-*/
+// NON-PORTABLE SYSTEM SERVICES
 
 #define MAX_JOYSTICK_AXIS 16
 
@@ -1170,9 +1030,8 @@ qboolean Sys_OpenFolderInFileManager( const char *path, qboolean create );
 void Sys_RemovePIDFile( const char *gamedir );
 void Sys_InitPIDFile( const char *gamedir );
 
-/* This is based on the Adaptive Huffman algorithm described in Sayood's Data
- * Compression book.  The ranks are not actually stored, but implicitly defined
- * by the location of a node within a doubly-linked list */
+// Adaptive Huffman as in Sayood's Data Compression book; ranks are implied by a node's
+// place in a doubly-linked list, not stored.
 
 #define NYT HMAX					/* NYT = Not Yet Transmitted */
 #define INTERNAL_NODE (HMAX+1)

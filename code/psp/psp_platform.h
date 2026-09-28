@@ -26,7 +26,12 @@
 #define MAX_SERVERSTATUSREQUESTS  16
 
 // master.quake3arena.com is dead. The dead update server is disabled with cl_motd 0 instead.
+// OpenArena servers list on dpmaster only, as in the OA engine.
+#ifdef STANDALONEOA
+#define MASTER_SERVER_NAME        "dpmaster.deathmask.net"
+#else
 #define MASTER_SERVER_NAME        "master.ioquake3.org"
+#endif
 
 // s_knownSfx rows, 100 bytes each; the sound pool can never hold 4096 sounds resident.
 #define MAX_SFX                   512
@@ -46,6 +51,9 @@
 // Area routing caches one server frame may build (be_aas_route.c). A first route can need ~130.
 #define PSP_AAS_FRAME_ROUTING_BUILDS 6
 
+// XMB nickname for the "name" cvar default, "UnnamedPlayer" when unset. Never NULL.
+const char *Sys_PSP_DefaultPlayerName( void );
+
 // Heap, hunk, zone, sound and pak-handle report. mallinfo "free" is inside the arena only:
 // the real heap headroom is PSP_HEAP_KB minus the peak arena.
 void Sys_PSP_HeapReport( const char *where );
@@ -55,6 +63,12 @@ void FS_PSP_HoldTempMemory( int delta );
 
 // Free bytes now and lowest since the last call, or -1 before the pool exists.
 void Z_PSP_FreeMemory( int *freeBytes, int *lowestFree, int *largestFree );
+#ifdef PSP_XBOX_MEMORY
+// Largest free main-zone block in bytes (block header included), 0 before the zone exists.
+int Z_PSP_LargestFree( void );
+// Nonzero when ptr is main-zone memory; plain int, since game modules see no qboolean here.
+int Z_PSP_InMainZone( const void *ptr );
+#endif
 void SND_PSP_FreeMemory( int *freeBytes, int *lowestFree );
 
 // Texture memory by pool; defined in psp_tex.c, declared here for cl_cgame.c.

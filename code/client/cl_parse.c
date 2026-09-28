@@ -45,22 +45,10 @@ void SHOWNET( msg_t *msg, char *s) {
 }
 
 
-/*
-=========================================================================
+// MESSAGE PARSING
 
-MESSAGE PARSING
-
-=========================================================================
-*/
-
-/*
-==================
-CL_DeltaEntity
-
-Parses deltas from the given base and adds the resulting entity
-to the current frame
-==================
-*/
+// Parses deltas from the given base and adds the resulting entity
+// to the current frame
 void CL_DeltaEntity (msg_t *msg, clSnapshot_t *frame, int newnum, entityState_t *old, 
 					 qboolean unchanged) {
 	entityState_t	*state;
@@ -82,12 +70,6 @@ void CL_DeltaEntity (msg_t *msg, clSnapshot_t *frame, int newnum, entityState_t 
 	frame->numEntities++;
 }
 
-/*
-==================
-CL_ParsePacketEntities
-
-==================
-*/
 void CL_ParsePacketEntities( msg_t *msg, clSnapshot_t *oldframe, clSnapshot_t *newframe) {
 	int			newnum;
 	entityState_t	*oldstate;
@@ -191,15 +173,8 @@ void CL_ParsePacketEntities( msg_t *msg, clSnapshot_t *oldframe, clSnapshot_t *n
 }
 
 
-/*
-================
-CL_ParseSnapshot
-
-If the snapshot is parsed properly, it will be copied to
-cl.snap and saved in cl.snapshots[].  If the snapshot is invalid
-for any reason, no changes to the state will be made at all.
-================
-*/
+// A valid snapshot is copied to cl.snap and saved in cl.snapshots[]; an invalid one changes
+// no state at all.
 void CL_ParseSnapshot( msg_t *msg ) {
 	int			len;
 	clSnapshot_t	*old;
@@ -208,9 +183,7 @@ void CL_ParseSnapshot( msg_t *msg ) {
 	int			oldMessageNum;
 	int			i, packetNum;
 
-	// get the reliable sequence acknowledge number
-	// NOTE: now sent with all server to client messages
-	//clc.reliableAcknowledge = MSG_ReadLong( msg );
+	// The reliable sequence acknowledge now comes with every server to client message.
 
 	// read in the new snapshot to a temporary buffer
 	// we will only copy to cl.snap if it is valid
@@ -236,10 +209,8 @@ void CL_ParseSnapshot( msg_t *msg ) {
 	}
 	newSnap.snapFlags = MSG_ReadByte( msg );
 
-	// If the frame is delta compressed from data that we
-	// no longer have available, we must suck up the rest of
-	// the frame, but not use it, then ask for a non-compressed
-	// message 
+	// A delta from data we no longer have: read the rest of the frame, do not use it, and ask
+	// for a non-compressed message.
 	if ( newSnap.deltaNum <= 0 ) {
 		newSnap.valid = qtrue;		// uncompressed frame
 		old = NULL;
@@ -289,10 +260,8 @@ void CL_ParseSnapshot( msg_t *msg ) {
 		return;
 	}
 
-	// clear the valid flags of any snapshots between the last
-	// received and this one, so if there was a dropped packet
-	// it won't look like something valid to delta from next
-	// time we wrap around in the buffer
+	// Clear the valid flags of snapshots between the last received and this one, so a dropped
+	// packet does not look valid to delta from when the buffer wraps.
 	oldMessageNum = cl.snap.messageNum + 1;
 
 	if ( newSnap.messageNum - oldMessageNum >= PACKET_BACKUP ) {
@@ -330,15 +299,8 @@ void CL_ParseSnapshot( msg_t *msg ) {
 int cl_connectedToPureServer;
 int cl_connectedToCheatServer;
 
-/*
-==================
-CL_SystemInfoChanged
-
-The systeminfo configstring has been changed, so parse
-new information out of it.  This will happen at every
-gamestate, and possibly during gameplay.
-==================
-*/
+// Parses the systeminfo configstring after a change: at every gamestate, and possibly
+// during gameplay.
 void CL_SystemInfoChanged( void ) {
 	char			*systemInfo;
 	const char		*s, *t;
@@ -347,10 +309,8 @@ void CL_SystemInfoChanged( void ) {
 	qboolean		gameSet;
 
 	systemInfo = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_SYSTEMINFO ];
-	// NOTE TTimo:
-	// when the serverId changes, any further messages we send to the server will use this new serverId
-	// https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=475
-	// in some cases, outdated cp commands might get sent with this news serverId
+	// TTimo: later messages use the new serverId, so outdated cp commands can go out with it
+	// (zerowing bug 475).
 	cl.serverId = atoi( Info_ValueForKey( systemInfo, "sv_serverid" ) );
 
 #ifdef USE_VOIP
@@ -417,7 +377,12 @@ void CL_SystemInfoChanged( void ) {
 			{
 #ifndef STANDALONE
 				if(Q_stricmp(key, "g_synchronousClients") && Q_stricmp(key, "pmove_fixed") &&
-				   Q_stricmp(key, "pmove_msec"))
+				   Q_stricmp(key, "pmove_msec")
+#ifdef STANDALONEOA
+				   // OA engine: unlagged OA mods also need sv_fps.
+				   && Q_stricmp(key, "sv_fps")
+#endif
+				   )
 #endif
 				{
 					Com_Printf(S_COLOR_YELLOW "WARNING: server is not allowed to set %s=%s\n", key, value);
@@ -435,11 +400,6 @@ void CL_SystemInfoChanged( void ) {
 	cl_connectedToPureServer = Cvar_VariableValue( "sv_pure" );
 }
 
-/*
-==================
-CL_ParseServerInfo
-==================
-*/
 static void CL_ParseServerInfo(void)
 {
 	const char *serverInfo;
@@ -454,11 +414,6 @@ static void CL_ParseServerInfo(void)
 		sizeof(clc.sv_dlURL));
 }
 
-/*
-==================
-CL_ParseGamestate
-==================
-*/
 void CL_ParseGamestate( msg_t *msg ) {
 	int				i;
 	entityState_t	*es;
@@ -555,13 +510,7 @@ void CL_ParseGamestate( msg_t *msg ) {
 
 //=====================================================================
 
-/*
-=====================
-CL_ParseDownload
-
-A download message has been received from the server
-=====================
-*/
+// A download message has been received from the server
 void CL_ParseDownload ( msg_t *msg ) {
 	int		size;
 	unsigned char data[MAX_MSGLEN];
@@ -638,11 +587,8 @@ void CL_ParseDownload ( msg_t *msg ) {
 			FS_BaseDir_Rename_HomeData ( clc.downloadTempName, clc.downloadName, qfalse );
 		}
 
-		// send intentions now
-		// We need this because without it, we would hold the last nextdl and then start
-		// loading right away.  If we take a while to load, the server is happily trying
-		// to send us that last block over and over.
-		// Write it twice to help make sure we acknowledge the download
+		// Send intentions now, twice to be sure the download is acknowledged; otherwise the server
+		// resends the last block while we load.
 		CL_WritePacket();
 		CL_WritePacket();
 
@@ -669,13 +615,7 @@ qboolean CL_ShouldIgnoreVoipSender(int sender)
 	return qfalse;
 }
 
-/*
-=====================
-CL_PlayVoip
-
-Play raw data
-=====================
-*/
+// Play raw data
 
 static void CL_PlayVoip(int sender, int samplecnt, const byte *data, int flags)
 {
@@ -692,13 +632,8 @@ static void CL_PlayVoip(int sender, int samplecnt, const byte *data, int flags)
 	}
 }
 
-/*
-=====================
-CL_ParseVoip
-
-A VoIP message has been received from the server
-=====================
-*/
+// CL_ParseVoip
+// A VoIP message has been received from the server
 static
 void CL_ParseVoip ( msg_t *msg, qboolean ignoreData ) {
 	static short decoded[VOIP_MAX_PACKET_SAMPLES*4]; // !!! FIXME: don't hard code
@@ -823,14 +758,8 @@ void CL_ParseVoip ( msg_t *msg, qboolean ignoreData ) {
 #endif
 
 
-/*
-=====================
-CL_ParseCommandString
-
-Command strings are just saved off until cgame asks for them
-when it transitions a snapshot
-=====================
-*/
+// Command strings are just saved off until cgame asks for them
+// when it transitions a snapshot
 void CL_ParseCommandString( msg_t *msg ) {
 	char	*s;
 	int		seq;
@@ -850,11 +779,6 @@ void CL_ParseCommandString( msg_t *msg ) {
 }
 
 
-/*
-=====================
-CL_ParseServerMessage
-=====================
-*/
 void CL_ParseServerMessage( msg_t *msg ) {
 	int			cmd;
 
@@ -873,9 +797,7 @@ void CL_ParseServerMessage( msg_t *msg ) {
 		clc.reliableAcknowledge = clc.reliableSequence;
 	}
 
-	//
 	// parse the message
-	//
 	while ( 1 ) {
 		if ( msg->readcount > msg->cursize ) {
 			Com_Error (ERR_DROP,"CL_ParseServerMessage: read past end of server message");

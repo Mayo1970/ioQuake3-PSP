@@ -72,9 +72,8 @@ typedef struct {
 	int				serverId;			// changes each server start
 	int				restartedServerId;	// serverId before a map_restart
 	int				checksumFeed;		// the feed key that we use to compute the pure checksum strings
-	// https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=475
-	// the serverId associated with the current checksumFeed (always <= serverId)
-	int       checksumFeedServerId;	
+	// the serverId of the current checksumFeed, always <= serverId (zerowing bug 475)
+	int       checksumFeedServerId;
 	int				snapshotCounter;	// incremented for each snapshot built
 	int				timeResidual;		// <= 1000 / sv_frame->value
 	int				nextFrameTime;		// when time > nextFrameTime, process world
@@ -105,8 +104,7 @@ typedef struct {
 	playerState_t	ps;
 	int				num_entities;
 	int				first_entity;		// into the circular sv_packet_entities[]
-										// the entities MUST be in increasing state number
-										// order, otherwise the delta compression will fail
+										// in increasing state number order, or delta compression fails
 	int				messageSent;		// time the message was transmitted
 	int				messageAcked;		// time the message was acked
 	int				messageSize;		// used to rate drop packets
@@ -177,10 +175,8 @@ typedef struct client_s {
 	int				pureAuthentic;
 	qboolean  gotCP; // TTimo - additional flag to distinguish between a bad pure checksum, and no cp command at all
 	netchan_t		netchan;
-	// TTimo
-	// queuing outgoing fragmented messages to send them properly, without udp packet bursts
-	// in case large fragmented messages are stacking up
-	// buffer them into this queue, and hand them out to netchan as needed
+	// TTimo: queue outgoing fragmented messages and hand them to netchan as needed, so large
+	// stacked-up messages do not cause udp packet bursts.
 	netchan_buffer_t *netchan_start_queue;
 	netchan_buffer_t **netchan_end_queue;
 
@@ -204,13 +200,10 @@ typedef struct client_s {
 //=============================================================================
 
 
-// MAX_CHALLENGES is made large to prevent a denial
-// of service attack that could cycle all of them
-// out before legitimate users connected
+// Large, so a denial of service cannot cycle every challenge out before legitimate users connect.
 #define	MAX_CHALLENGES	2048
-// Allow a certain amount of challenges to have the same IP address
-// to make it a bit harder to DOS one single IP address from connecting
-// while not allowing a single ip to grab all challenge resources
+// Limits the challenges one IP address can hold, so it is harder to DOS a single IP and one IP
+// cannot grab every challenge.
 #define MAX_CHALLENGES_MULTI (MAX_CHALLENGES / 2)
 
 #define	AUTHORIZE_TIMEOUT	5000
@@ -288,6 +281,9 @@ extern	cvar_t	*sv_dlRate;
 extern	cvar_t	*sv_minPing;
 extern	cvar_t	*sv_maxPing;
 extern	cvar_t	*sv_gametype;
+#ifdef STANDALONEOA
+extern	cvar_t	*sv_dorestart;
+#endif
 extern	cvar_t	*sv_pure;
 extern	cvar_t	*sv_floodProtect;
 extern	cvar_t	*sv_lanForceRate;
@@ -307,9 +303,7 @@ extern	cvar_t	*sv_voipProtocol;
 
 //===========================================================
 
-//
 // sv_main.c
-//
 typedef struct leakyBucket_s leakyBucket_t;
 struct leakyBucket_s {
 	netadrtype_t	type;
@@ -345,9 +339,7 @@ int SV_RateMsec(client_t *client);
 
 
 
-//
 // sv_init.c
-//
 void SV_SetConfigstring( int index, const char *val );
 void SV_GetConfigstring( int index, char *buffer, int bufferSize );
 void SV_UpdateConfigstrings( client_t *client );
@@ -360,9 +352,7 @@ void SV_SpawnServer( char *server, qboolean killBots );
 
 
 
-//
 // sv_client.c
-//
 void SV_GetChallenge(netadr_t from);
 
 void SV_DirectConnect( netadr_t from );
@@ -386,14 +376,10 @@ int SV_SendDownloadMessages(void);
 int SV_SendQueuedMessages(void);
 
 
-//
 // sv_ccmds.c
-//
 void SV_Heartbeat_f( void );
 
-//
 // sv_snapshot.c
-//
 void SV_AddServerCommand( client_t *client, const char *cmd );
 void SV_UpdateServerCommandsToClient( client_t *client, msg_t *msg );
 void SV_WriteFrameToClient (client_t *client, msg_t *msg);
@@ -401,9 +387,7 @@ void SV_SendMessageToClient( msg_t *msg, client_t *client );
 void SV_SendClientMessages( void );
 void SV_SendClientSnapshot( client_t *client );
 
-//
 // sv_game.c
-//
 int	SV_NumForGentity( sharedEntity_t *ent );
 sharedEntity_t *SV_GentityNum( int num );
 playerState_t *SV_GameClientNum( int num );
@@ -414,9 +398,7 @@ void		SV_ShutdownGameProgs ( void );
 void		SV_RestartGameProgs( void );
 qboolean	SV_inPVS (const vec3_t p1, const vec3_t p2);
 
-//
 // sv_bot.c
-//
 void		SV_BotFrame( int time );
 int			SV_BotAllocateClient(void);
 void		SV_BotFreeClient( int clientNum );
@@ -432,10 +414,7 @@ void BotImport_DebugPolygonDelete(int id);
 
 void SV_BotInitBotLib(void);
 
-//============================================================
-//
 // high level object sorting to reduce interaction tests
-//
 
 void SV_ClearWorld (void);
 // called after the world model has been loaded, before linking any entities
@@ -445,11 +424,8 @@ void SV_UnlinkEntity( sharedEntity_t *ent );
 // so it doesn't clip against itself
 
 void SV_LinkEntity( sharedEntity_t *ent );
-// Needs to be called any time an entity changes origin, mins, maxs,
-// or solid.  Automatically unlinks if needed.
-// sets ent->r.absmin and ent->r.absmax
-// sets ent->leafnums[] for pvs determination even if the entity
-// is not solid
+// Call whenever an entity's origin, mins, maxs or solid changes; unlinks if needed and sets
+// absmin, absmax and leafnums[] (for pvs, even when not solid).
 
 
 clipHandle_t SV_ClipHandleForEntity( const sharedEntity_t *ent );
@@ -459,12 +435,8 @@ void SV_SectorList_f( void );
 
 
 int SV_AreaEntities( const vec3_t mins, const vec3_t maxs, int *entityList, int maxcount );
-// fills in a table of entity numbers with entities that have bounding boxes
-// that intersect the given area.  It is possible for a non-axial bmodel
-// to be returned that doesn't actually intersect the area on an exact
-// test.
-// returns the number of pointers filled in
-// The world entity is never returned in this list.
+// Fills a table with the numbers of entities whose bounds touch the area (a non-axial bmodel may
+// not really intersect) and returns the count; the world entity is never listed.
 
 
 int SV_PointContents( const vec3_t p, int passEntityNum );
@@ -486,9 +458,7 @@ void SV_Trace( trace_t *results, const vec3_t start, vec3_t mins, vec3_t maxs, c
 void SV_ClipToEntity( trace_t *trace, const vec3_t start, const vec3_t mins, const vec3_t maxs, const vec3_t end, int entityNum, int contentmask, int capsule );
 // clip to a specific entity
 
-//
 // sv_net_chan.c
-//
 void SV_Netchan_Transmit( client_t *client, msg_t *msg);
 int SV_Netchan_TransmitNextFragment(client_t *client);
 qboolean SV_Netchan_Process( client_t *client, msg_t *msg );
