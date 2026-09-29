@@ -503,8 +503,14 @@ static void CG_MapRestart( void ) {
 #define MAX_VOICEFILESIZE	16384
 #define MAX_VOICEFILES		8
 #define MAX_VOICECHATS		64
+#ifdef __PSP__
+// TA's 8 .voice files use at most 17 sounds per chat and 36-char texts; saves 1.6 MiB of bss (Xbox port)
+#define MAX_VOICESOUNDS		24
+#define MAX_CHATSIZE		48
+#else
 #define MAX_VOICESOUNDS		64
 #define MAX_CHATSIZE		64
+#endif
 #define MAX_HEADMODELS		64
 
 typedef struct voiceChat_s

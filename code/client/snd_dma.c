@@ -382,6 +382,13 @@ sfxHandle_t	S_Base_RegisterSound( const char *name, qboolean compressed ) {
 	sfx->inMemory = qfalse;
 	sfx->soundCompressed = compressed;
 
+#if defined(__PSP__) && defined(MISSIONPACK)
+	// TA's cgame registers all 8 voice chat sets (796 sounds) at init; S_StartSound loads each
+	// on first play. A missing file then plays silence (no data), not the hit sound.
+	if ( !Q_stricmpn( name, "sound/voices/", 13 ) ) {
+		return sfx - s_knownSfx;
+	}
+#endif
   S_memoryLoad(sfx);
 
 	if ( sfx->defaultSound ) {

@@ -542,7 +542,7 @@ qboolean FS_FileExists_HomeData( const char *file );
 qboolean FS_CreatePath (const char *OSPath);
 
 int FS_FindVM(void **startSearch, char *found, int foundlen, const char *name, int enableDll);
-#if defined(PSP_STATIC_GAME_MODULES) && defined(STANDALONEOA)
+#if defined(PSP_STATIC_GAME_MODULES) && (defined(STANDALONEOA) || defined(MISSIONPACK))
 qboolean FS_PSP_StockVM(const char *name);
 #endif
 
@@ -955,6 +955,9 @@ void	Sys_Print( const char *msg );
 #ifdef __PSP__
 /* PSP diagnostic reports stay in the Memory Stick log, not the in-game chat. */
 qboolean Sys_PSP_IsDiagnosticMessage( const char *msg );
+#ifdef MISSIONPACK
+const char *Sys_PSP_GameBase( const char *base, const char *game );
+#endif
 #endif
 
 // Sys_Milliseconds should only be used for profiling purposes,

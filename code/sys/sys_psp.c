@@ -65,7 +65,8 @@ PSP_MAIN_THREAD_STACK_SIZE_KB( 512 );
 #ifdef STANDALONEOA
 #define PSP_INSTALL_DIR "openarena"
 #else
-#define PSP_INSTALL_DIR "ioquake3"
+// Team Arena too: its EBOOT has its own XMB folder but reads baseq3 from here.
+#define PSP_INSTALL_DIR "QUAKE3"
 #endif
 #define PSP_EF0_BASE_PATH "ef0:/PSP/GAME/" PSP_INSTALL_DIR
 #define PSP_MS0_BASE_PATH "ms0:/PSP/GAME/" PSP_INSTALL_DIR
@@ -155,6 +156,34 @@ static qboolean PSP_HasDevicePrefix( const char *path )
 		colon < strchr( path, '/' ) ) ? qtrue : qfalse;
 }
 
+#ifdef MISSIONPACK
+// The TA EBOOT's own folder; empty when the base path came from the fixed probes.
+static char psp_taPath[ MAX_OSPATH ];
+
+// The TA EBOOT's folder to the q3 install beside it: "ms0:/PSP/GAME/ioquake3ta" -> ".../ioquake3".
+static void PSP_UseInstallBeside( char *dir, int size )
+{
+	int  len = (int)strlen( dir );
+	char *slash;
+
+	while( len > 0 && dir[ len - 1 ] == '/' )
+		dir[ --len ] = '\0';
+	Q_strncpyz( psp_taPath, dir, sizeof( psp_taPath ) );
+	slash = strrchr( dir, '/' );
+	if( slash )
+		slash[ 1 ] = '\0';
+	Q_strcat( dir, size, PSP_INSTALL_DIR );
+}
+
+// missionpack lives in the TA EBOOT's folder (reads and writes); baseq3 stays in the q3 install.
+const char *Sys_PSP_GameBase( const char *base, const char *game )
+{
+	if( psp_taPath[ 0 ] && !Q_stricmp( game, BASETA ) && !Q_stricmp( base, psp_basePath ) )
+		return psp_taPath;
+	return base;
+}
+#endif
+
 char *Sys_PSP_ResolveBasePath( const char *argv0 )
 {
 	char candidate[ MAX_OSPATH ];
@@ -176,6 +205,9 @@ char *Sys_PSP_ResolveBasePath( const char *argv0 )
 		if( PSP_HasDevicePrefix( argv0copy ) )
 		{
 			Q_strncpyz( candidate, Sys_Dirname( argv0copy ), sizeof( candidate ) );
+#ifdef MISSIONPACK
+			PSP_UseInstallBeside( candidate, sizeof( candidate ) );
+#endif
 
 			if( PSP_IsDirectory( candidate ) )
 			{
@@ -194,6 +226,9 @@ char *Sys_PSP_ResolveBasePath( const char *argv0 )
 	if( getcwd( candidate, sizeof( candidate ) - 1 ) != NULL )
 	{
 		candidate[ sizeof( candidate ) - 1 ] = '\0';
+#ifdef MISSIONPACK
+		PSP_UseInstallBeside( candidate, sizeof( candidate ) );
+#endif
 
 		if( PSP_HasDevicePrefix( candidate ) && PSP_IsDirectory( candidate ) )
 		{
@@ -210,6 +245,9 @@ char *Sys_PSP_ResolveBasePath( const char *argv0 )
 	}
 
 	// 3. Hardcoded install paths
+#ifdef MISSIONPACK
+	psp_taPath[ 0 ] = '\0';
+#endif
 	if( PSP_IsDirectory( PSP_EF0_BASE_PATH ) )
 	{
 		Q_strncpyz( psp_basePath, PSP_EF0_BASE_PATH, sizeof( psp_basePath ) );
@@ -1209,7 +1247,7 @@ void Sys_PSP_StutterTraceDump( void )
 		return;
 	psp_stutterDumped = 1;
 
-	Com_sprintf( path, sizeof( path ), "%s/q3psp%d.trace",
+	Com_sprintf( path, sizeof( path ), "%s/q3psp%d" PSP_LOG_TAG ".trace",
 		Sys_PSP_BasePath(), PSP_LOG_GEN );
 	fd = sceIoOpen( path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777 );
 	if( fd < 0 )
@@ -1926,6 +1964,10 @@ void Sys_PSP_BuildBootCommandLine( char *cmdline, int size )
 #endif
 #ifdef PSP_STATIC_GAME_MODULES
 		"+set vm_game 0 "
+#endif
+#ifdef MISSIONPACK
+		/* The Team Arena EBOOT's linked-in modules are the missionpack ones (Xbox port). */
+		"+set fs_game " BASETA " "
 #endif
 #ifndef PSP_SESSION21_UNPIN_S_KHZ
 		"+set s_khz 11 "

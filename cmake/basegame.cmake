@@ -248,6 +248,25 @@ set(UI_SOURCES
     ${SOURCE_DIR}/q3_ui/ui_video.c
 )
 
+if(FLAVOR_ID STREQUAL "ta")
+# Team Arena lists from upstream cmake/missionpack.cmake: cgame adds the scripted HUD, ui is the
+# menu-script ui. qagame is the baseq3 list; MISSIONPACK (flavor.cmake) selects its TA code.
+list(APPEND CGAME_SOURCES
+    ${SOURCE_DIR}/cgame/cg_newdraw.c
+    ${SOURCE_DIR}/ui/ui_shared.c
+)
+
+set(UI_SOURCES
+    ${SOURCE_DIR}/ui/ui_main.c
+    ${SOURCE_DIR}/ui/ui_atoms.c
+    ${SOURCE_DIR}/ui/ui_gameinfo.c
+    ${SOURCE_DIR}/ui/ui_players.c
+    ${SOURCE_DIR}/ui/ui_shared.c
+    ${SOURCE_DIR}/game/bg_misc.c
+    ${SOURCE_DIR}/game/bg_lib.c
+)
+endif()
+
 set(UI_BINARY_SOURCES ${SOURCE_DIR}/ui/ui_syscalls.c)
 
 set(GAME_MODULE_SHARED_SOURCES

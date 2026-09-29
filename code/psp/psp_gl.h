@@ -1,19 +1,5 @@
-/*
-===========================================================================
-PSP port
-
-Minimal GL 1.1 type/enum compatibility header. code/renderercommon/qgl.h
-normally pulls these from <SDL_opengl.h>, but SDL is not present on PSP
-(code/sdl/ was pruned down to sdl_glimp.c, kept only as reference). This
-header supplies just enough of the desktop-GL vocabulary for qgl.h's
-QGL_*_PROCS macros and the ~68 qgl* entry points renderergl1 /
-renderercommon reference to typecheck against no-op stubs in psp_glimp.c.
-
-Values are the standard OpenGL 1.1 / registered-extension token values.
-Not a real GL implementation - Session 5 replaces the qgl* bodies with
-sceGu calls; this header only needs to make the vtable compile.
-===========================================================================
-*/
+// Minimal GL 1.1 types and tokens for qgl.h's QGL_*_PROCS, since the PSP has no SDL_opengl.h.
+// Standard GL token values; not a GL implementation.
 
 #ifndef __PSP_GL_H__
 #define __PSP_GL_H__
@@ -155,6 +141,7 @@ typedef long		GLsizeiptr;
 
 #define GL_UNSIGNED_BYTE		0x1401
 #define GL_UNSIGNED_INT			0x1405
+#define GL_UNSIGNED_SHORT_5_6_5		0x8363
 #define GL_FLOAT			0x1406
 
 #define GL_VERTEX_ARRAY			0x8074
@@ -163,12 +150,7 @@ typedef long		GLsizeiptr;
 
 #define GL_MODELVIEW			0x1700
 #define GL_PROJECTION			0x1701
-/*
- GL_TEXTURE was absent until Session 12b because upstream renderergl1 never
- selects it. psp_tcmod.c does, to reach the GE's own texture matrix - see
- gu_MatrixMode, where it must be spelled out or it folds into GU_MODEL and
- overwrites the view transform.
-*/
+// Only psp_tcmod.c selects GL_TEXTURE (the GE texture matrix); see gu_MatrixMode.
 #define GL_TEXTURE			0x1702
 
 #define GL_FLAT				0x1D00

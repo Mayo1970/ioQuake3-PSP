@@ -489,8 +489,56 @@ byte	mipBlendColors[16][4] = {
 	{0,0,255,128},
 };
 
+#ifdef MISSIONPACK
+// 2D art keeps at most this many rows: the screen shows the 480-row virtual height on 272 lines.
+#define PSP_2D_MAX_ROWS		256
 
-static void Upload32( unsigned *data, 
+int		r_pspImageFlags = -1;		// -1 outside R_FindImageFile: decode at full size
+
+// The size Upload32 ends with for these flags, so R_LoadTGA can decode straight to it.
+void R_PSP_UploadSize( int width, int height, int flags, int *outWidth, int *outHeight ) {
+	int		w, h;
+
+	for ( w = 1 ; w < width ; w <<= 1 )
+		;
+	for ( h = 1 ; h < height ; h <<= 1 )
+		;
+	if ( r_roundImagesDown->integer && w > width )
+		w >>= 1;
+	if ( r_roundImagesDown->integer && h > height )
+		h >>= 1;
+	if ( !( flags & ( IMGFLAG_MIPMAP | IMGFLAG_PICMIP ) ) && h > PSP_2D_MAX_ROWS )
+		h = PSP_2D_MAX_ROWS;
+	if ( flags & IMGFLAG_PICMIP ) {
+		w >>= r_picmip->integer;
+		h >>= r_picmip->integer;
+	}
+	if ( w < 1 )
+		w = 1;
+	if ( h < 1 )
+		h = 1;
+	while ( w > glConfig.maxTextureSize || h > glConfig.maxTextureSize ) {
+		w >>= 1;
+		h >>= 1;
+	}
+	*outWidth = w;
+	*outHeight = h;
+}
+
+// One RGB with varying alpha (font atlases): PSP_TexUpload2D stores it as a 4-bit CLUT texture.
+static qboolean R_PSP_IsOneColour( const byte *data, int pixels ) {
+	int		i;
+
+	for ( i = 1 ; i < pixels ; i++ ) {
+		if ( data[i*4] != data[0] || data[i*4+1] != data[1] || data[i*4+2] != data[2] ) {
+			return qfalse;
+		}
+	}
+	return qtrue;
+}
+#endif
+
+static void Upload32( unsigned *data,
 						  int width, int height, 
 						  qboolean mipmap, 
 						  qboolean picmip, 
@@ -517,6 +565,10 @@ static void Upload32( unsigned *data,
 		scaled_width >>= 1;
 	if ( r_roundImagesDown->integer && scaled_height > height )
 		scaled_height >>= 1;
+#ifdef MISSIONPACK
+	if ( !mipmap && !picmip && scaled_height > PSP_2D_MAX_ROWS )
+		scaled_height = PSP_2D_MAX_ROWS;
+#endif
 
 #ifdef PSP_XBOX_MEMORY
 	// Xbox port: a shrinking resample reads only at or after what it writes, so it runs in place.
@@ -684,6 +736,12 @@ static void Upload32( unsigned *data,
 	if ( !lightMap && allowCompression && !r_greyscale->integer ) {
 		internalFormat = PSP_TexChooseFormat( internalFormat, samples == 4, scaled_width, scaled_height, picmip, mipmap );
 	}
+#ifdef MISSIONPACK
+	if ( samples == 4 && !lightMap && internalFormat != GL_COMPRESSED_RGBA_S3TC_DXT1_EXT &&
+		internalFormat != GL_COMPRESSED_RGBA_S3TC_DXT5_EXT && R_PSP_IsOneColour( (byte *)data, width * height ) ) {
+		internalFormat = PSP_GL_ONE_COLOUR;
+	}
+#endif
 #endif
 
 	// copy or resample data as appropriate for first MIP level
@@ -835,7 +893,11 @@ image_t *R_CreateImage( const char *name, byte *pic, int width, int height,
 								image->flags & IMGFLAG_MIPMAP,
 								image->flags & IMGFLAG_PICMIP,
 								isLightmap,
+#if defined(__PSP__) && defined(MISSIONPACK)
+								!(image->flags & IMGFLAG_NO_COMPRESSION) && !PSP_TexIsTextArt( name ),
+#else
 								!(image->flags & IMGFLAG_NO_COMPRESSION),
+#endif
 								&image->internalFormat,
 								&image->uploadWidth,
 								&image->uploadHeight );
@@ -993,12 +1055,18 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 	// JPEG (Xbox port) and TGA files decode at 1/2^r_picmip, so the full-size RGBA buffer never exists.
 	r_pspImageShift = ( flags & IMGFLAG_PICMIP ) && r_picmip->integer <= 3 ? r_picmip->integer : 0;
 	r_pspImageScaled = qfalse;
+#ifdef MISSIONPACK
+	r_pspImageFlags = flags;
+#endif
 	countStart = Sys_PSP_CountBegin();
 #endif
 	R_LoadImage( name, &pic, &width, &height );
 #ifdef __PSP__
 	Sys_PSP_CountEnd( PSP_COUNT_IMAGE_LOAD, countStart, pic ? 1 : 0 );
 	r_pspImageShift = 0;
+#ifdef MISSIONPACK
+	r_pspImageFlags = -1;
+#endif
 	// Picmip is already applied, so Upload32 must not halve the image again.
 	if ( r_pspImageScaled ) {
 		flags &= ~IMGFLAG_PICMIP;

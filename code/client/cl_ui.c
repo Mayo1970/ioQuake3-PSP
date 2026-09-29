@@ -957,8 +957,8 @@ void CL_InitUI( void ) {
 
 	// load the dll or bytecode
 	interpret = Cvar_VariableValue("vm_ui");
-#if defined(PSP_STATIC_GAME_MODULES) && defined(STANDALONEOA)
-	// The linked-in ui replaces a stock OA ui.qvm on pure servers too (Xbox port).
+#if defined(PSP_STATIC_GAME_MODULES) && (defined(STANDALONEOA) || defined(MISSIONPACK))
+	// The linked-in ui replaces a stock OA or TA ui.qvm on pure servers too (Xbox port).
 	if(cl_connectedToPureServer && !(interpret == VMI_NATIVE && FS_PSP_StockVM("ui")))
 #else
 	if(cl_connectedToPureServer)

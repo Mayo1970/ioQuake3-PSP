@@ -38,6 +38,10 @@ qboolean Sys_PSP_IsDiagnosticMessage( const char *msg )
 		"PSP audio:",
 		"PSP sound load:",
 		"PSP sound codec:",
+		"PSP sound timing:",
+		"PSP vertex arena:",
+		"PSP fast texcoords:",
+		"PSP static world:",
 		"PSP sound asset sampled:",
 		"PSP file trace:",
 		"PSP file trace slow:",
@@ -114,7 +118,7 @@ void CON_Init( void )
 #ifndef NDEBUG
 	SceUID fd;
 
-	Com_sprintf( logPath, sizeof( logPath ), "%s/q3psp%d.log", Sys_PSP_BasePath(), PSP_LOG_GEN );
+	Com_sprintf( logPath, sizeof( logPath ), "%s/q3psp%d" PSP_LOG_TAG ".log", Sys_PSP_BasePath(), PSP_LOG_GEN );
 
 	// Truncate once here; every later open appends.
 	fd = sceIoOpen( logPath, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777 );

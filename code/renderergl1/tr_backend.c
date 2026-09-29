@@ -39,9 +39,7 @@ static float	s_flipMatrix[16] = {
 };
 
 
-/*
-** GL_Bind
-*/
+// GL_Bind
 void GL_Bind( image_t *image ) {
 	int texnum;
 
@@ -65,9 +63,7 @@ void GL_Bind( image_t *image ) {
 	}
 }
 
-/*
-** GL_SelectTexture
-*/
+// GL_SelectTexture
 void GL_SelectTexture( int unit )
 {
 	if ( glState.currenttmu == unit )
@@ -96,9 +92,7 @@ void GL_SelectTexture( int unit )
 }
 
 
-/*
-** GL_BindMultitexture
-*/
+// GL_BindMultitexture
 void GL_BindMultitexture( image_t *image0, GLuint env0, image_t *image1, GLuint env1 ) {
 	int		texnum0, texnum1;
 
@@ -124,9 +118,7 @@ void GL_BindMultitexture( image_t *image0, GLuint env0, image_t *image1, GLuint 
 }
 
 
-/*
-** GL_Cull
-*/
+// GL_Cull
 void GL_Cull( int cullType ) {
 	if ( glState.faceCulling == cullType ) {
 		return;
@@ -153,9 +145,7 @@ void GL_Cull( int cullType ) {
 	}
 }
 
-/*
-** GL_TexEnv
-*/
+// GL_TexEnv
 void GL_TexEnv( int env )
 {
 	if ( env == glState.texEnv[glState.currenttmu] )
@@ -186,12 +176,7 @@ void GL_TexEnv( int env )
 	}
 }
 
-/*
-** GL_State
-**
-** This routine is responsible for setting the most commonly changed state
-** in Q3.
-*/
+// GL_State: sets the most commonly changed state in Q3.
 void GL_State( unsigned long stateBits )
 {
 	unsigned long diff = stateBits ^ glState.glStateBits;
@@ -201,9 +186,7 @@ void GL_State( unsigned long stateBits )
 		return;
 	}
 
-	//
 	// check depthFunc bits
-	//
 	if ( diff & GLS_DEPTHFUNC_EQUAL )
 	{
 		if ( stateBits & GLS_DEPTHFUNC_EQUAL )
@@ -216,9 +199,7 @@ void GL_State( unsigned long stateBits )
 		}
 	}
 
-	//
 	// check blend bits
-	//
 	if ( diff & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) )
 	{
 		GLenum srcFactor = GL_ONE, dstFactor = GL_ONE;
@@ -299,9 +280,7 @@ void GL_State( unsigned long stateBits )
 		}
 	}
 
-	//
 	// check depthmask
-	//
 	if ( diff & GLS_DEPTHMASK_TRUE )
 	{
 		if ( stateBits & GLS_DEPTHMASK_TRUE )
@@ -314,9 +293,7 @@ void GL_State( unsigned long stateBits )
 		}
 	}
 
-	//
 	// fill/line mode
-	//
 	if ( diff & GLS_POLYMODE_LINE )
 	{
 		if ( stateBits & GLS_POLYMODE_LINE )
@@ -329,9 +306,7 @@ void GL_State( unsigned long stateBits )
 		}
 	}
 
-	//
 	// depthtest
-	//
 	if ( diff & GLS_DEPTHTEST_DISABLE )
 	{
 		if ( stateBits & GLS_DEPTHTEST_DISABLE )
@@ -344,9 +319,7 @@ void GL_State( unsigned long stateBits )
 		}
 	}
 
-	//
 	// alpha test
-	//
 	if ( diff & GLS_ATEST_BITS )
 	{
 		switch ( stateBits & GLS_ATEST_BITS )
@@ -377,13 +350,7 @@ void GL_State( unsigned long stateBits )
 
 
 
-/*
-================
-RB_Hyperspace
-
-A player has predicted a teleport, but hasn't arrived yet
-================
-*/
+// RB_Hyperspace: a player has predicted a teleport, but hasn't arrived yet.
 static void RB_Hyperspace( void ) {
 	float		c;
 
@@ -411,14 +378,7 @@ static void SetViewportAndScissor( void ) {
 		backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
 }
 
-/*
-=================
-RB_BeginDrawingView
-
-Any mirrored or portaled views have already been drawn, so prepare
-to actually render the visible surfaces for this view
-=================
-*/
+// RB_BeginDrawingView: mirrored and portal views are already drawn; prepare the visible surfaces.
 void RB_BeginDrawingView (void) {
 	int clearBits = 0;
 
@@ -435,9 +395,7 @@ void RB_BeginDrawingView (void) {
 	// 2D images again
 	backEnd.projection2D = qfalse;
 
-	//
 	// set the modelview matrix for the viewer
-	//
 	SetViewportAndScissor();
 
 	// ensures that depth writes are enabled for the depth clear
@@ -499,11 +457,7 @@ void RB_BeginDrawingView (void) {
 }
 
 
-/*
-==================
-RB_RenderDrawSurfList
-==================
-*/
+// RB_RenderDrawSurfList
 void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	shader_t		*shader, *oldShader;
 	int				fogNum, oldFogNum;
@@ -535,13 +489,8 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	backEnd.pc.c_surfaces += numDrawSurfs;
 
 	for (i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++) {
-		/*
-		 * Keep the hot loop's sort and surface pointers in registers.  On the
-		 * PSP this also avoids a call through R_DecomposeSort for every sort
-		 * transition; the helper is a tiny field extraction, but its out-of-line
-		 * call and pointer stores are visible across the many surfaces in a view.
-		 * The decoded values deliberately match R_DecomposeSort exactly.
-		 */
+		// Sort and surface pointers stay in registers; the sort decode inlines R_DecomposeSort exactly,
+		// saving an out-of-line call per sort transition on the PSP.
 		const unsigned sort = drawSurf->sort;
 		surfaceType_t *surface = drawSurf->surface;
 
@@ -560,10 +509,8 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		R_DecomposeSort( sort, &entityNum, &shader, &fogNum, &dlighted );
 #endif
 
-		//
-		// change the tess parameters if needed
-		// a "entityMergable" shader is a shader that can have surfaces from separate
-		// entities merged into a single batch, like smoke and blood puff sprites
+		// change the tess parameters if needed; an "entityMergable" shader (smoke, blood puffs)
+		// can merge surfaces from separate entities into one batch
 		if ( shader != NULL && ( shader != oldShader || fogNum != oldFogNum || dlighted != oldDlighted 
 			|| ( entityNum != oldEntityNum && !shader->entityMergable ) ) ) {
 			if (oldShader != NULL) {
@@ -575,9 +522,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			oldDlighted = dlighted;
 		}
 
-		//
 		// change the modelview matrix if needed
-		//
 		if ( entityNum != oldEntityNum ) {
 			depthRange = isCrosshair = qfalse;
 
@@ -619,10 +564,8 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 			qglLoadMatrixf( backEnd.or.modelMatrix );
 
-			//
-			// change depthrange. Also change projection matrix so first person weapon does not look like coming
-			// out of the screen.
-			//
+			// change depthrange, and the projection matrix so the first person weapon does not look
+			// like it comes out of the screen
 			if (oldDepthRange != depthRange || wasCrosshair != isCrosshair)
 			{
 				if (depthRange)
@@ -702,20 +645,9 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 }
 
 
-/*
-============================================================================
+// RENDER BACK END FUNCTIONS
 
-RENDER BACK END FUNCTIONS
-
-============================================================================
-*/
-
-/*
-================
-RB_SetGL2D
-
-================
-*/
+// RB_SetGL2D
 void	RB_SetGL2D (void) {
 	backEnd.projection2D = qtrue;
 
@@ -741,15 +673,8 @@ void	RB_SetGL2D (void) {
 }
 
 
-/*
-=============
-RE_StretchRaw
-
-FIXME: not exactly backend
-Stretches a raw 32 bit power of 2 bitmap image over the given screen rectangle.
-Used for cinematics.
-=============
-*/
+// RE_StretchRaw: stretches a raw power-of-2 cinematic frame over the given screen rectangle.
+// FIXME: not exactly backend.
 void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
 	int			i, j;
 	int			start, end;
@@ -805,6 +730,12 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 }
 
 void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
+#ifdef MISSIONPACK
+	// cl_cin.c decodes TA videos straight to GE 5650, so the texture takes a plain copy.
+	const GLenum	format = GL_RGB, type = GL_UNSIGNED_SHORT_5_6_5;
+#else
+	const GLenum	format = GL_RGBA, type = GL_UNSIGNED_BYTE;
+#endif
 
 	GL_Bind( tr.scratchImage[client] );
 
@@ -812,7 +743,7 @@ void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int
 	if ( cols != tr.scratchImage[client]->width || rows != tr.scratchImage[client]->height ) {
 		tr.scratchImage[client]->width = tr.scratchImage[client]->uploadWidth = cols;
 		tr.scratchImage[client]->height = tr.scratchImage[client]->uploadHeight = rows;
-		qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, cols, rows, 0, GL_RGBA, GL_UNSIGNED_BYTE, data );
+		qglTexImage2D( GL_TEXTURE_2D, 0, GL_RGB8, cols, rows, 0, format, type, data );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 		qglTexParameterf( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, haveClampToEdge ? GL_CLAMP_TO_EDGE : GL_CLAMP );
@@ -821,18 +752,13 @@ void RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int
 		if (dirty) {
 			// otherwise, just subimage upload it so that drivers can tell we are going to be changing
 			// it and don't try and do a texture compression
-			qglTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, cols, rows, GL_RGBA, GL_UNSIGNED_BYTE, data );
+			qglTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, cols, rows, format, type, data );
 		}
 	}
 }
 
 
-/*
-=============
-RB_SetColor
-
-=============
-*/
+// RB_SetColor
 const void	*RB_SetColor( const void *data ) {
 	const setColorCommand_t	*cmd;
 
@@ -846,11 +772,7 @@ const void	*RB_SetColor( const void *data ) {
 	return (const void *)(cmd + 1);
 }
 
-/*
-=============
-RB_StretchPic
-=============
-*/
+// RB_StretchPic
 const void *RB_StretchPic ( const void *data ) {
 	const stretchPicCommand_t	*cmd;
 	shader_t *shader;
@@ -922,12 +844,7 @@ const void *RB_StretchPic ( const void *data ) {
 }
 
 
-/*
-=============
-RB_DrawSurfs
-
-=============
-*/
+// RB_DrawSurfs
 const void	*RB_DrawSurfs( const void *data ) {
 	const drawSurfsCommand_t	*cmd;
 
@@ -953,12 +870,7 @@ const void	*RB_DrawSurfs( const void *data ) {
 }
 
 
-/*
-=============
-RB_DrawBuffer
-
-=============
-*/
+// RB_DrawBuffer
 const void	*RB_DrawBuffer( const void *data ) {
 	const drawBufferCommand_t	*cmd;
 
@@ -975,16 +887,8 @@ const void	*RB_DrawBuffer( const void *data ) {
 	return (const void *)(cmd + 1);
 }
 
-/*
-===============
-RB_ShowImages
-
-Draw all the images to the screen, on top of whatever
-was there.  This is used to test for texture thrashing.
-
-Also called by RE_EndRegistration
-===============
-*/
+// RB_ShowImages: draws all images over the screen to test for texture thrashing.
+// Also called by RE_EndRegistration.
 void RB_ShowImages( void ) {
 	int		i;
 	image_t	*image;
@@ -1035,12 +939,7 @@ void RB_ShowImages( void ) {
 
 }
 
-/*
-=============
-RB_ColorMask
-
-=============
-*/
+// RB_ColorMask
 const void *RB_ColorMask(const void *data)
 {
 	const colorMaskCommand_t *cmd = data;
@@ -1050,12 +949,7 @@ const void *RB_ColorMask(const void *data)
 	return (const void *)(cmd + 1);
 }
 
-/*
-=============
-RB_ClearDepth
-
-=============
-*/
+// RB_ClearDepth
 const void *RB_ClearDepth(const void *data)
 {
 	const clearDepthCommand_t *cmd = data;
@@ -1072,12 +966,7 @@ const void *RB_ClearDepth(const void *data)
 	return (const void *)(cmd + 1);
 }
 
-/*
-=============
-RB_SwapBuffers
-
-=============
-*/
+// RB_SwapBuffers
 const void	*RB_SwapBuffers( const void *data ) {
 	const swapBuffersCommand_t	*cmd;
 
@@ -1125,11 +1014,7 @@ const void	*RB_SwapBuffers( const void *data ) {
 	return (const void *)(cmd + 1);
 }
 
-/*
-====================
-RB_ExecuteRenderCommands
-====================
-*/
+// RB_ExecuteRenderCommands
 void RB_ExecuteRenderCommands( const void *data ) {
 	int		t1, t2;
 #ifdef __PSP__
@@ -1139,11 +1024,8 @@ void RB_ExecuteRenderCommands( const void *data ) {
 	t1 = ri.Milliseconds ();
 
 #ifdef __PSP__
-	/*
-	 The swap command closes the list and enters GLimp_EndFrame, which is
-	 already covered by the endFrame zone. Stop here so this scope measures
-	 only backend command dispatch and renderer work.
-	*/
+	// The swap command enters GLimp_EndFrame, which the endFrame zone already covers; stop here
+	// so this scope measures only backend dispatch and renderer work.
 	Sys_PSP_RenderProfileBegin( PSP_RPROF_BACKEND_CMDS );
 #endif
 

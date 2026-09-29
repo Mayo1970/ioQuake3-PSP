@@ -140,12 +140,16 @@ if(PSP_XBOX_MEMORY)
 endif()
 
 # PSP_HEAP_KB feeds PSP_HEAP_SIZE_KB. The other heaps take their EBOOT image savings against the
-# tested 35072 KB q3 build less 68-100 KB, so the outside-heap PRX budget (1313 KB) keeps a margin.
+# tested 35072 KB q3 build less 68-136 KB, so the outside-heap PRX budget (1313 KB) keeps a margin.
 if(NOT DEFINED PSP_HEAP_KB)
     if(FLAVOR_ID STREQUAL "oa" AND PSP_XBOX_MEMORY)
         set(PSP_HEAP_KB 37440)
     elseif(FLAVOR_ID STREQUAL "oa")
         set(PSP_HEAP_KB 34432)
+    elseif(FLAVOR_ID STREQUAL "ta" AND PSP_XBOX_MEMORY)
+        set(PSP_HEAP_KB 35264)
+    elseif(FLAVOR_ID STREQUAL "ta")
+        set(PSP_HEAP_KB 32256)
     elseif(PSP_XBOX_MEMORY)
         set(PSP_HEAP_KB 38016)
     else()

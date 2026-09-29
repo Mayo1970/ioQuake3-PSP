@@ -366,6 +366,9 @@ char *FS_BuildOSPath( const char *base, const char *game, const char *qpath ) {
 	if( !game || !game[0] ) {
 		game = fs_gamedir;
 	}
+#if defined(__PSP__) && defined(MISSIONPACK)
+	base = Sys_PSP_GameBase( base, game );
+#endif
 
 	Com_sprintf( temp, sizeof(temp), "/%s/%s", game, qpath );
 	FS_ReplaceSeparators( temp );
@@ -1452,9 +1455,15 @@ int FS_FindVM(void **startSearch, char *found, int foundlen, const char *name, i
 	return -1;
 }
 
-#if defined(PSP_STATIC_GAME_MODULES) && defined(STANDALONEOA)
+#if defined(PSP_STATIC_GAME_MODULES) && (defined(STANDALONEOA) || defined(MISSIONPACK))
+#ifdef STANDALONEOA
 // baseoa/pak6-patch088.pk3, the OA 0.8.8 QVMs that oa/ builds natively (Xbox port).
 static const unsigned int oa_vm_checksums[] = { 3601704695u };
+#define PSP_STOCK_VM_SUMS oa_vm_checksums
+#else
+// The retail missionpack paks, whose QVMs code/ui and code/cgame build natively (Xbox port).
+#define PSP_STOCK_VM_SUMS missionpak_checksums
+#endif
 
 // A pure server checks the cgame/ui pak refs. A stock QVM pak gets them without a load,
 // so the linked-in module runs in its place; any other QVM returns qfalse.
@@ -1472,9 +1481,9 @@ qboolean FS_PSP_StockVM(const char *name)
 		   FS_FOpenFileReadDir(qvmName, search, NULL, qfalse, qfalse) <= 0)
 			continue;
 
-		for(i = 0; i < ARRAY_LEN(oa_vm_checksums); i++)
+		for(i = 0; i < ARRAY_LEN(PSP_STOCK_VM_SUMS); i++)
 		{
-			if(search->pack->checksum == oa_vm_checksums[i])
+			if(search->pack->checksum == PSP_STOCK_VM_SUMS[i])
 			{
 				search->pack->referenced |= FS_GENERAL_REF |
 					(!Q_stricmp(name, "cgame") ? FS_CGAME_REF : FS_UI_REF);
@@ -3749,8 +3758,7 @@ static void FS_CheckPak0( void )
 		char errorText[MAX_STRING_CHARS] = "";
 		char gamePath[MAX_OSPATH];
 
-		Com_sprintf(gamePath, sizeof(gamePath), "%s%c%s%c",
-			installPath, PATH_SEP, BASETA, PATH_SEP);
+		Q_strncpyz(gamePath, FS_BuildOSPath(installPath, BASETA, ""), sizeof(gamePath));
 
 		Q_strcat(errorText, sizeof(errorText),
 				"Quake 3 Team Arena data files are missing. Please copy");

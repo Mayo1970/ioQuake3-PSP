@@ -138,6 +138,11 @@ void R_LoadJPG( const char *name, byte **pic, int *width, int *height );
 // R_FindImageFile sets the shift (picmip); R_LoadJPG and R_LoadTGA report whether they decoded that small.
 extern int		r_pspImageShift;
 extern qboolean	r_pspImageScaled;
+#ifdef MISSIONPACK
+// The flags of the image being loaded (-1: none); R_LoadTGA decodes straight to R_PSP_UploadSize.
+extern int		r_pspImageFlags;
+void R_PSP_UploadSize( int width, int height, int flags, int *outWidth, int *outHeight );
+#endif
 #endif
 void R_LoadPCX( const char *name, byte **pic, int *width, int *height );
 void R_LoadPNG( const char *name, byte **pic, int *width, int *height );

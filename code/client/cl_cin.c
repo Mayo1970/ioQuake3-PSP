@@ -306,6 +306,7 @@ long RllDecodeStereoToMono(unsigned char *from,short *to,unsigned int size,char 
 	return size;
 }
 
+#ifndef MISSIONPACK
 // Function:
 // Description:
 
@@ -455,6 +456,141 @@ int		spl;
 	} while ( status[index] != NULL );
 }
 
+#else
+// blitVQQuad32fs for 2-byte texels: TA videos are 512x512, twice the pixels of the q3 ones.
+static void blit8_16( byte *src, byte *dst, int spl )
+{
+	int i;
+
+	for(i = 0; i < 8; ++i)
+	{
+		memcpy(dst, src, 16);
+		src += 16;
+		dst += spl;
+	}
+}
+
+static void blit4_16( byte *src, byte *dst, int spl )
+{
+	int i;
+
+	for(i = 0; i < 4; ++i)
+	{
+		memcpy(dst, src, 8);
+		src += 8;
+		dst += spl;
+	}
+}
+
+static void blit2_16( byte *src, byte *dst, int spl )
+{
+	memcpy(dst, src, 4);
+	memcpy(dst+spl, src+4, 4);
+}
+
+static void move8_16( byte *src, byte *dst, int spl )
+{
+	int i;
+
+	for(i = 0; i < 8; ++i)
+	{
+		memcpy(dst, src, 16);
+		src += spl;
+		dst += spl;
+	}
+}
+
+static void move4_16( byte *src, byte *dst, int spl )
+{
+	int i;
+
+	for(i = 0; i < 4; ++i)
+	{
+		memcpy(dst, src, 8);
+		src += spl;
+		dst += spl;
+	}
+}
+
+static void blitVQQuad16fs( byte **status, unsigned char *data )
+{
+	unsigned short	newd, celdata, code;
+	unsigned int	index, i;
+	int		spl;
+
+	newd	= 0;
+	celdata = 0;
+	index	= 0;
+
+	spl = cinTable[currentHandle].samplesPerLine;
+
+	do {
+		if (!newd) {
+			newd = 7;
+			celdata = data[0] + data[1]*256;
+			data += 2;
+		} else {
+			newd--;
+		}
+
+		code = (unsigned short)(celdata&0xc000);
+		celdata <<= 2;
+
+		switch (code) {
+			case	0x8000:
+				blit8_16( (byte *)&vq8[(*data)*64], status[index], spl );
+				data++;
+				index += 5;
+				break;
+			case	0xc000:
+				index++;
+				for(i=0;i<4;i++) {
+					if (!newd) {
+						newd = 7;
+						celdata = data[0] + data[1]*256;
+						data += 2;
+					} else {
+						newd--;
+					}
+
+					code = (unsigned short)(celdata&0xc000); celdata <<= 2;
+
+					switch (code) {
+						case	0x8000:
+							blit4_16( (byte *)&vq4[(*data)*16], status[index], spl );
+							data++;
+							break;
+						case	0xc000:
+							blit2_16( (byte *)&vq2[(*data)*4], status[index], spl );
+							data++;
+							blit2_16( (byte *)&vq2[(*data)*4], status[index]+4, spl );
+							data++;
+							blit2_16( (byte *)&vq2[(*data)*4], status[index]+spl*2, spl );
+							data++;
+							blit2_16( (byte *)&vq2[(*data)*4], status[index]+spl*2+4, spl );
+							data++;
+							break;
+						case	0x4000:
+							move4_16( status[index] + cin.mcomp[(*data)], status[index], spl );
+							data++;
+							break;
+					}
+					index++;
+				}
+				break;
+			case	0x4000:
+				move8_16( status[index] + cin.mcomp[(*data)], status[index], spl );
+				data++;
+				index += 5;
+				break;
+			case	0x0000:
+				index += 5;
+				break;
+		}
+	} while ( status[index] != NULL );
+}
+#endif
+
 // Function:
 // Description:
 
@@ -532,7 +668,12 @@ static unsigned short yuv_to_rgb( long y, long u, long v )
 	if (g > 63) g = 63;
 	if (b > 31) b = 31;
 
+#ifdef MISSIONPACK
+	// GE 5650 order (red in the low bits), so the renderer copies frames without converting.
+	return (unsigned short)((b<<11)+(g<<5)+(r));
+#else
 	return (unsigned short)((r<<11)+(g<<5)+(b));
+#endif
 }
 
 // Function:
@@ -955,9 +1096,15 @@ static void initRoQ( void )
 {
 	if (currentHandle < 0) return;
 
+#ifdef MISSIONPACK
+	cinTable[currentHandle].VQNormal = (void (*)(byte *, void *))blitVQQuad16fs;
+	cinTable[currentHandle].VQBuffer = (void (*)(byte *, void *))blitVQQuad16fs;
+	cinTable[currentHandle].samplesPerPixel = 2;
+#else
 	cinTable[currentHandle].VQNormal = (void (*)(byte *, void *))blitVQQuad32fs;
 	cinTable[currentHandle].VQBuffer = (void (*)(byte *, void *))blitVQQuad32fs;
 	cinTable[currentHandle].samplesPerPixel = 4;
+#endif
 	ROQ_GenYUVTables();
 	RllSetupTable();
 }

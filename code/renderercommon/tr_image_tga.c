@@ -36,14 +36,50 @@ typedef struct _TargaHeader {
 // With a shift, rows decode into one row buffer and are box-filtered into the 1/2^shift image,
 // so the full-size RGBA buffer never exists (as for JPEG).
 typedef struct {
-	int			shift;
+	int			shift;			// 1/2^shift box; Team Arena: nonzero while shrinking
 	int			columns;
 	int			pendingRow;		// row held in rowBuf, -1 if none
 	byte		*rowBuf;
 	unsigned	*sums;			// per output pixel and channel, one output row
 	byte		*out;
+#ifdef MISSIONPACK
+	int			rows, outWidth, outHeight;
+	int			rowsInBucket;
+	unsigned short	*xBucket;		// output column of each source column
+	unsigned short	*xCount;		// source columns per output column
+#endif
 } tgaShrink_t;
 
+#ifdef MISSIONPACK
+// Team Arena decodes every TGA straight to its upload size (R_PSP_UploadSize), so no image,
+// 640x480 levelshots included, ever needs its full-size RGBA buffer. Buckets may be uneven.
+static void R_TGAShrinkRow( tgaShrink_t *s ) {
+	const byte	*in = s->rowBuf;
+	int			outRow = s->pendingRow * s->outHeight / s->rows;
+	int			x, c;
+
+	for ( x = 0; x < s->columns; x++, in += 4 ) {
+		unsigned	*sum = s->sums + s->xBucket[x] * 4;
+
+		for ( c = 0; c < 4; c++ ) {
+			sum[c] += in[c];
+		}
+	}
+	s->rowsInBucket++;
+	// Rows arrive bottom row first, so a bucket's lowest row completes its output row.
+	if ( !s->pendingRow || ( s->pendingRow - 1 ) * s->outHeight / s->rows != outRow ) {
+		byte	*dst = s->out + outRow * s->outWidth * 4;
+
+		for ( x = 0; x < s->outWidth * 4; x++ ) {
+			unsigned	n = s->xCount[x >> 2] * s->rowsInBucket;
+
+			dst[x] = (byte)( ( n & ( n - 1 ) ) ? s->sums[x] / n : s->sums[x] >> __builtin_ctz( n ) );
+			s->sums[x] = 0;
+		}
+		s->rowsInBucket = 0;
+	}
+}
+#else
 static void R_TGAShrinkRow( tgaShrink_t *s ) {
 	int			outWidth = s->columns >> s->shift;
 	const byte	*in = s->rowBuf;
@@ -66,6 +102,7 @@ static void R_TGAShrinkRow( tgaShrink_t *s ) {
 		}
 	}
 }
+#endif
 
 // The destination for the next row: the full image without a shift, else the row buffer.
 static byte *R_TGARow( tgaShrink_t *s, byte *full, int row ) {
@@ -174,10 +211,37 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 
 
 #ifdef __PSP__
-	// Only exact divisions, so the power-of-two rounding gives the same size as a later picmip.
 	memset( &shrink, 0, sizeof( shrink ) );
 	shrink.columns = columns;
 	shrink.pendingRow = -1;
+#ifdef MISSIONPACK
+	if ( r_pspImageFlags >= 0 ) {
+		R_PSP_UploadSize( columns, rows, r_pspImageFlags, &shrink.outWidth, &shrink.outHeight );
+	}
+	if ( shrink.outWidth && shrink.outWidth <= (int)columns && shrink.outHeight <= (int)rows &&
+		( shrink.outWidth < (int)columns || shrink.outHeight < (int)rows ) ) {
+		int	x;
+
+		shrink.shift = 1;
+		shrink.rows = rows;
+		shrink.out = R_ImageMalloc( shrink.outWidth * shrink.outHeight * 4 );
+		shrink.rowBuf = R_ImageMalloc( columns * 4 );
+		shrink.sums = R_ImageMalloc( shrink.outWidth * 4 * sizeof( unsigned ) );
+		shrink.xBucket = R_ImageMalloc( columns * sizeof( unsigned short ) );
+		shrink.xCount = R_ImageMalloc( shrink.outWidth * sizeof( unsigned short ) );
+		memset( shrink.sums, 0, shrink.outWidth * 4 * sizeof( unsigned ) );
+		memset( shrink.xCount, 0, shrink.outWidth * sizeof( unsigned short ) );
+		for ( x = 0; x < (int)columns; x++ ) {
+			shrink.xBucket[x] = (unsigned short)( x * shrink.outWidth / columns );
+			shrink.xCount[shrink.xBucket[x]]++;
+		}
+		targa_rgba = NULL;
+	} else {
+		shrink.shift = 0;
+	}
+	if ( !shrink.shift )
+#else
+	// Only exact divisions, so the power-of-two rounding gives the same size as a later picmip.
 	shrink.shift = r_pspImageShift;
 	if ( shrink.shift > 0 && ( ( columns | rows ) & ( ( 1u << shrink.shift ) - 1 ) ) ) {
 		shrink.shift = 0;
@@ -192,6 +256,7 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 		memset( shrink.sums, 0, sumBytes );
 		targa_rgba = NULL;
 	} else
+#endif
 #endif
 	targa_rgba = R_ImageMalloc (numPixels);
 
@@ -358,8 +423,15 @@ void R_LoadTGA ( const char *name, byte **pic, int *width, int *height)
 		R_ImageFree( shrink.rowBuf );
 		R_ImageFree( shrink.sums );
 		targa_rgba = shrink.out;
+#ifdef MISSIONPACK
+		R_ImageFree( shrink.xBucket );
+		R_ImageFree( shrink.xCount );
+		columns = shrink.outWidth;
+		rows = shrink.outHeight;
+#else
 		columns >>= shrink.shift;
 		rows >>= shrink.shift;
+#endif
 		r_pspImageScaled = qtrue;
 	}
 #endif

@@ -38,7 +38,8 @@ docker run --rm -v "${PWD}:/src" -w /src pspdev/pspdev:latest sh -c `
 ```
 
 Add `-DFLAVOR=oa` to the `psp-cmake` line to build the **OpenArena** flavor (OpenArena 0.8.8
-gamecode, native modules, Ogg music through Tremor). Without it the build is Quake III Arena.
+gamecode, native modules, Ogg music through Tremor). Add `-DFLAVOR=ta` to build **Team Arena**
+(missionpack gamecode, native modules). Without either the build is Quake III Arena.
 
 ## Installing on PSP
 
@@ -55,6 +56,15 @@ File structure:
 ```
 ms0:/PSP/GAME/ioquake3/EBOOT.PBP
 ms0:/PSP/GAME/ioquake3/baseq3/pak0.pk3 ... pak8.pk3
+```
+
+Team Arena has its own XMB entry, but it reads its data from the Quake III folder. Install
+Quake III first, then copy the Team Arena `missionpack` pk3 files next to `baseq3`.
+
+```
+ms0:/PSP/GAME/ioquake3ta/EBOOT.PBP
+ms0:/PSP/GAME/ioquake3/baseq3/pak0.pk3 ... pak8.pk3
+ms0:/PSP/GAME/ioquake3/missionpack/pak0.pk3 ... pak3.pk3
 ```
 
 OpenArena is free: copy the OpenArena 0.8.8 `baseoa` pk3 files instead.

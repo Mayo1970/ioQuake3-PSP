@@ -35,6 +35,9 @@ typedef struct {
 
 	unsigned char	minFilter, magFilter;
 	unsigned char	wrapS, wrapT;
+#ifdef MISSIONPACK
+	unsigned char	clut;				// pspTexCluts row of a GU_PSM_T4 texture
+#endif
 } pspTexture_t;
 
 static pspTexture_t	pspTextures[ PSP_MAX_TEXTURES ];
@@ -89,6 +92,10 @@ static int PSP_TexLevelBytes( int psm, int tbw, int height )
 		return tbw * height / 2;
 	if( psm == GU_PSM_DXT5 )
 		return tbw * height;
+#ifdef MISSIONPACK
+	if( psm == GU_PSM_T4 )
+		return tbw * height / 2;
+#endif
 	return tbw * height * 2;
 }
 
@@ -235,12 +242,122 @@ static void PSP_TexWriteback( void *ptr, int bytes )
 	sceKernelDcacheWritebackRange( ptr, ( bytes + 63 ) & ~63 );
 }
 
+#ifdef MISSIONPACK
+// One-colour alpha textures (font atlases) keep 4-bit indices into a 16-step alpha ramp of their
+// colour: a quarter of 4444 at the same 16 alpha levels. The GE reads the CLUT at draw time.
+#define PSP_TEX_MAX_CLUTS	8
+
+static unsigned int	pspTexCluts[ PSP_TEX_MAX_CLUTS ][ 16 ] __attribute__( ( aligned( 64 ) ) );
+static int		pspTexClutCount;
+
+// The ramp for this RGB, made on first use; -1 once every row holds another colour.
+static int PSP_TexClutFor( const byte *rgb )
+{
+	const unsigned int	colour = rgb[ 0 ] | ( rgb[ 1 ] << 8 ) | ( rgb[ 2 ] << 16 );
+	int			i;
+
+	for( i = 0; i < pspTexClutCount; i++ )
+	{
+		if( ( pspTexCluts[ i ][ 0 ] & 0xFFFFFF ) == colour )
+			return i;
+	}
+	if( pspTexClutCount == PSP_TEX_MAX_CLUTS )
+		return -1;
+
+	for( i = 0; i < 16; i++ )
+		pspTexCluts[ pspTexClutCount ][ i ] = ( (unsigned int)( i * 17 ) << 24 ) | colour;
+	PSP_TexWriteback( pspTexCluts[ pspTexClutCount ], sizeof( pspTexCluts[ 0 ] ) );
+
+	return pspTexClutCount++;
+}
+
+// Two texels per byte, the left one in the low nibble; a swizzle block is 32 x 8 texels.
+static int PSP_TexT4Offset( int x, int y, int tbw, qboolean swizzled )
+{
+	const int	bx = x >> 1;
+
+	if( !swizzled )
+		return y * ( tbw >> 1 ) + bx;
+
+	return ( ( ( y >> 3 ) * ( tbw >> 5 ) + ( bx >> 4 ) ) * 8 + ( y & 7 ) ) * 16 + ( bx & 15 );
+}
+
+// The index is the alpha's top nibble, as PSP_CONV_4444 keeps it. The level must be zeroed.
+static void PSP_TexBlitT4( pspTexture_t *tex, int level, int width, int height, const byte *src )
+{
+	byte		*dst = (byte *)tex->level[ level ];
+	const int	tbw = tex->tbw[ level ];
+	const qboolean	swizzled = tex->swizzled ? qtrue : qfalse;
+	int		x, y;
+
+	for( y = 0; y < height; y++ )
+	{
+		for( x = 0; x < width; x++, src += 4 )
+			dst[ PSP_TexT4Offset( x, y, tbw, swizzled ) ] |= ( src[ 3 ] >> 4 ) << ( ( x & 1 ) * 4 );
+	}
+}
+
+// Set while PSP_TexUpload2D takes a TA cinematic frame that is already GE-order 5650.
+static qboolean	pspTexSrc5650;
+
+// Copies a 5650 rectangle into a 5650 level. Block-aligned swizzled rectangles (every cinematic)
+// move as 16-byte block rows; anything else goes texel by texel.
+static void PSP_TexCopy5650( pspTexture_t *tex, int level, int xoffset, int yoffset,
+                             int width, int height, const unsigned short *src )
+{
+	unsigned short	*dst = (unsigned short *)tex->level[ level ];
+	const int	tbw = tex->tbw[ level ];
+	int		x, y, row;
+
+	if( !dst )
+		return;
+
+	if( tex->swizzled && !( ( xoffset | yoffset | width | height ) & 7 ) &&
+	    !( (size_t)src & 3 ) )
+	{
+		const int	srcWords = width >> 1;
+
+		for( y = 0; y < height; y += 8 )
+		{
+			for( x = 0; x < width; x += 8 )
+			{
+				unsigned int		*d = (unsigned int *)( dst +
+					( ( ( yoffset + y ) >> 3 ) * ( tbw >> 3 ) + ( ( xoffset + x ) >> 3 ) ) * 64 );
+				const unsigned int	*s = (const unsigned int *)( src + y * width + x );
+
+				for( row = 0; row < 8; row++, d += 4, s += srcWords )
+				{
+					d[ 0 ] = s[ 0 ];
+					d[ 1 ] = s[ 1 ];
+					d[ 2 ] = s[ 2 ];
+					d[ 3 ] = s[ 3 ];
+				}
+			}
+		}
+		return;
+	}
+
+	for( y = 0; y < height; y++ )
+	{
+		for( x = 0; x < width; x++ )
+			dst[ PSP_TexelOffset( xoffset + x, yoffset + y, tbw, tex->swizzled ? qtrue : qfalse ) ] =
+				src[ y * width + x ];
+	}
+}
+#endif
+
 // The Xbox port's policy: picmip'd or mipmapped art, and 2D art from 256 (opaque) or 512 (alpha).
 // Cinematics never come here: they upload through qglTexImage2D and stay 16-bit.
 GLenum PSP_TexChooseFormat( GLenum internalFormat, qboolean alpha, int width, int height,
 	qboolean picmip, qboolean mipmap )
 {
+#ifdef MISSIONPACK
+	// TA menu art stays loaded in a match and fills the pool, so 2D art goes DXT from r_pspDxt2D px
+	// on both sides (the Xbox port uses 128). 64 keeps the smallest icons 16-bit.
+	const int	minSide = ri.Cvar_Get( "r_pspDxt2D", "64", 0 )->integer;
+#else
 	const int	minSide = alpha ? 512 : 256;
+#endif
 
 	if( !ri.Cvar_Get( "r_pspDxt", "1", 0 )->integer || width < 8 || height < 4 )
 		return internalFormat;
@@ -250,6 +367,15 @@ GLenum PSP_TexChooseFormat( GLenum internalFormat, qboolean alpha, int width, in
 
 	return alpha ? GL_COMPRESSED_RGBA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
 }
+
+#ifdef MISSIONPACK
+// Font atlases stay 16-bit: DXT blocks would step their antialiased glyph edges (Xbox port).
+qboolean PSP_TexIsTextArt( const char *name )
+{
+	return ( !Q_stricmpn( name, "fonts/", 6 ) || !Q_stricmpn( name, "menu/art/font", 13 ) ||
+		!Q_stricmp( name, "gfx/2d/bigchars" ) ) ? qtrue : qfalse;
+}
+#endif
 
 // qglTexImage2D, once per level from 0. Upload32 has already resampled, picmip'd, clamped to
 // 512 and light-scaled; internalFormat carries its alpha answer or PSP_TexChooseFormat's DXT.
@@ -273,6 +399,11 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 		case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
 			psm = GU_PSM_DXT5;
 			break;
+#ifdef MISSIONPACK
+		case PSP_GL_ONE_COLOUR:
+			psm = GU_PSM_T4;
+			break;
+#endif
 		case GL_RGBA:
 		case GL_RGBA4:
 		case GL_RGBA8:
@@ -296,6 +427,17 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 		// DXT needs whole 4x4 blocks and a tbw of at least 8; smaller images stay 16-bit.
 		if( PSP_TEX_IS_DXT( psm ) && ( width < 8 || height < 4 ) )
 			psm = ( psm == GU_PSM_DXT1 ) ? GU_PSM_5650 : GU_PSM_4444;
+#ifdef MISSIONPACK
+		if( psm == GU_PSM_T4 )
+		{
+			const int	clut = PSP_TexClutFor( (const byte *)rgba );
+
+			if( clut < 0 )
+				psm = GU_PSM_4444;
+			else
+				tex->clut = (unsigned char)clut;
+		}
+#endif
 
 		tex->psm = (unsigned char)psm;
 
@@ -322,6 +464,13 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 	{
 		tbw = width;
 	}
+#ifdef MISSIONPACK
+	else if( tex->psm == GU_PSM_T4 )
+	{
+		// 16-byte rows, which is also a swizzle block's width.
+		tbw = ( width + 31 ) & ~31;
+	}
+#endif
 	else
 	{
 		tbw = ( width + 7 ) & ~7;
@@ -363,6 +512,13 @@ void PSP_TexUpload2D( GLint level, GLenum internalFormat, GLsizei width, GLsizei
 	{
 		// Zeroed padding makes a tbw bug a black edge instead of noise.
 		Com_Memset( tex->level[ level ], 0, bytes );
+#ifdef MISSIONPACK
+		if( tex->psm == GU_PSM_T4 )
+			PSP_TexBlitT4( tex, level, width, height, (const byte *)rgba );
+		else if( pspTexSrc5650 )
+			PSP_TexCopy5650( tex, level, 0, 0, width, height, (const unsigned short *)rgba );
+		else
+#endif
 		PSP_TexBlit( tex, level, 0, 0, width, height, (const byte *)rgba, width );
 	}
 	PSP_TexWriteback( tex->level[ level ], bytes );
@@ -406,6 +562,10 @@ void PSP_TexSubImage2D( GLint level, GLint xoffset, GLint yoffset, GLsizei width
 	// Cinematic images are always 16-bit; a DXT texture here would be a misrouted update.
 	if( PSP_TEX_IS_DXT( tex->psm ) )
 		return;
+#ifdef MISSIONPACK
+	if( tex->psm == GU_PSM_T4 )
+		return;
+#endif
 
 	if( xoffset < 0 || yoffset < 0 ||
 	    xoffset + width > tex->w[ level ] || yoffset + height > tex->h[ level ] )
@@ -414,6 +574,35 @@ void PSP_TexSubImage2D( GLint level, GLint xoffset, GLint yoffset, GLsizei width
 	PSP_TexBlit( tex, level, xoffset, yoffset, width, height, (const byte *)rgba, width );
 	PSP_TexWriteback( tex->level[ level ], PSP_TexLevelBytes( tex->psm, tex->tbw[ level ], tex->h[ level ] ) );
 }
+
+#ifdef MISSIONPACK
+// qglTexImage2D with a 5650 cinematic frame: a one-level 5650 texture, filled by copy.
+void PSP_TexUpload2D5650( GLsizei width, GLsizei height, const void *pixels )
+{
+	pspTexSrc5650 = qtrue;
+	PSP_TexUpload2D( 0, GL_RGB8, width, height, pixels );
+	pspTexSrc5650 = qfalse;
+}
+
+// qglTexSubImage2D with a 5650 cinematic frame.
+void PSP_TexSubImage2D5650( GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, const void *pixels )
+{
+	pspTexture_t	*tex = PSP_TexSlot( pspCurrentTexture );
+
+	if( !tex || !tex->used || !pixels || width <= 0 || height <= 0 )
+		return;
+
+	if( level < 0 || level > tex->maxLevel || !tex->level[ level ] || tex->psm != GU_PSM_5650 )
+		return;
+
+	if( xoffset < 0 || yoffset < 0 ||
+	    xoffset + width > tex->w[ level ] || yoffset + height > tex->h[ level ] )
+		return;
+
+	PSP_TexCopy5650( tex, level, xoffset, yoffset, width, height, (const unsigned short *)pixels );
+	PSP_TexWriteback( tex->level[ level ], PSP_TexLevelBytes( tex->psm, tex->tbw[ level ], tex->h[ level ] ) );
+}
+#endif
 
 // GL keeps filter and wrap per texture, the GE globally, so they are re-emitted at bind.
 static void PSP_TexEmitSamplerState( const pspTexture_t *tex )
@@ -507,6 +696,14 @@ void PSP_TexBind( GLuint name )
 	if( !tex || !tex->used || !tex->level[ 0 ] )
 		return;
 
+#ifdef MISSIONPACK
+	// 16 entries of 8888 are two 8-entry blocks.
+	if( tex->psm == GU_PSM_T4 )
+	{
+		sceGuClutMode( GU_PSM_8888, 0, 0x0f, 0 );
+		sceGuClutLoad( 2, pspTexCluts[ tex->clut ] );
+	}
+#endif
 	sceGuTexMode( tex->psm, tex->maxLevel, 0, tex->swizzled );
 
 	for( i = 0; i <= tex->maxLevel; i++ )
@@ -543,11 +740,21 @@ void PSP_TexMemReport( void )
 	int	poolUsed = 0, poolTotal = 0, poolLargest = 0;
 	int	dxt1 = 0, dxt5 = 0, dxtBytes = 0;
 	int	i;
+#ifdef MISSIONPACK
+	int	t4 = 0, t4Bytes = 0;
+#endif
 
 	for( i = 0; i < PSP_MAX_TEXTURES; i++ )
 	{
 		const pspTexture_t	*tex = &pspTextures[ i ];
 
+#ifdef MISSIONPACK
+		if( tex->used && tex->psm == GU_PSM_T4 )
+		{
+			t4++;
+			t4Bytes += tex->bytes;
+		}
+#endif
 		if( !tex->used || !PSP_TEX_IS_DXT( tex->psm ) )
 			continue;
 
@@ -565,6 +772,9 @@ void PSP_TexMemReport( void )
 		pspTexSwizzledCount,
 		pspTexCount - pspTexSwizzledCount,
 		dxt1, dxt5, dxtBytes / 1024 );
+#ifdef MISSIONPACK
+	ri.Printf( PRINT_ALL, "PSP textures: %d one-colour T4 in %d KB\n", t4, t4Bytes / 1024 );
+#endif
 
 	PSP_PoolStats( &poolUsed, &poolTotal, &poolLargest );
 

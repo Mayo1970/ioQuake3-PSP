@@ -1,62 +1,14 @@
-/*
-===========================================================================
-PSP port - code/psp/psp_qgl.c
-
-The qgl* vtable: GL 1.1 fixed-function calls translated to sceGu commands
-appended to the display list psp_glimp.c keeps open.
-
-This is the whole point of the port's renderer architecture. code/renderergl1
-is byte-identical to upstream ioquake3 and calls qgl* through function
-pointers it already used on every other platform, so nothing above this file
-knows the GE exists. The hardware-proven Quake3PSP-mirror took the opposite
-route - its renderer/tr_local.h includes pspgu.h and all 364 GL call sites
-were rewritten - and it is used here as the semantic oracle for WHICH GU
-values to pass, not as a structural template.
-
-Every body is written against a <Name>proc typedef from
-code/renderercommon/qgl.h, so a signature drift upstream is a compile error
-here rather than a silent function-pointer cast.
-
-SESSION 6 SCOPE. This file is the vtable and the small translations that
-fit in one function; anything with real reasoning behind it lives beside
-the code it constrains:
-
-  psp_glimp.c  display, VRAM, list, swap                    (Session 5)
-  psp_tex.c    texture objects, formats, swizzle, cache     (Session 6)
-  psp_draw.c   vertex arrays -> sceGuDrawArray              (Session 6)
-
-Session 7 filled in immediate mode - qglBegin, qglEnd, the qglVertex and
-qglTexCoord families and qglArrayElement. The skybox is drawn with it, so
-it was never optional. It also gave psp_draw.c's clipper the two facts it
-needs from this file: whether the current projection is RB_SetGL2D's ortho,
-and whether either matrix has changed since the planes were last extracted.
-
-Still no-ops: the portal clip plane (qglClipPlane) and
-framebuffer-to-texture copy (qglCopyTexSubImage2D). The GE has no user clip
-plane at all, and neither is needed for a navigable map; the consequence is
-that mirror surfaces show the world behind them instead of a reflection,
-which is exactly how Quake3PSP-mirror ships. Do not half-implement them
-here; a partially wired path renders garbage that is far harder to bisect
-than nothing at all.
-===========================================================================
-*/
+// qgl* vtable: GL 1.1 fixed-function calls turned into sceGu commands on psp_glimp.c's open list.
+// renderergl1 stays upstream; no-ops: qglClipPlane, qglCopyTexSubImage2D (mirrors show the world behind).
 
 #include "../renderercommon/tr_common.h"
 #include "psp_gu.h"
 #include "psp_tex.h"
 #include "psp_draw.h"
 
-/*
-=================================================================
-Translation helpers
-=================================================================
-*/
+// Translation helpers
 
-/*
- GL depth/alpha comparison -> GU. The GU enum is not the GL enum: GU_LESS
- is 4 where GL_LESS is 0x0201, and GU_ALWAYS is 1 where GU_NEVER is 0, so
- this cannot be an arithmetic offset.
-*/
+// GU compare enums are not GL values shifted (GU_LESS 4, GU_ALWAYS 1), so map each one.
 static int PSP_CompareFunc( GLenum func )
 {
 	switch( func )
@@ -73,25 +25,8 @@ static int PSP_CompareFunc( GLenum func )
 	}
 }
 
-/*
- GL blend factor -> GU blend factor, for one operand.
-
- The GE has no ZERO or ONE factor. GU_FIX supplies a constant instead, and
- sceGuBlendFunc carries a separate fix value per operand, so ZERO is
- GU_FIX/0x000000 and ONE is GU_FIX/0xFFFFFF. The mirror instead maps
- GL_ZERO to GU_DST_ALPHA and GL_ONE to GU_ONE_MINUS_DST_ALPHA
- (renderer/tr_backend.cpp:334-338), which only works because a 5650 target
- has no alpha bits and reads destination alpha as 0. That silently inverts
- the moment the framebuffer becomes 8888 - which Session 11 may well do -
- so use GU_FIX, which is format-independent.
-
- GU_OTHER_COLOR means "the colour of the other operand": destination colour
- when used as the source factor, source colour when used as the
- destination factor. That is exactly GL_DST_COLOR and GL_SRC_COLOR
- respectively, which is why one enum covers both directions.
-
- isSource picks which fix slot the caller must fill; *fix receives it.
-*/
+// The GE has no ZERO/ONE factor: use GU_FIX with fix 0 / 0xFFFFFF (format-independent, unlike the
+// mirror's DST_ALPHA trick). GU_OTHER_COLOR covers GL_DST_COLOR as src and GL_SRC_COLOR as dst.
 static int PSP_BlendFactor( GLenum factor, unsigned int *fix )
 {
 	*fix = 0;
@@ -118,9 +53,7 @@ static int PSP_BlendFactor( GLenum factor, unsigned int *fix )
 		case GL_DST_ALPHA:		return GU_DST_ALPHA;
 		case GL_ONE_MINUS_DST_ALPHA:	return GU_ONE_MINUS_DST_ALPHA;
 
-		// No saturating factor on the GE. Plain source alpha is the closest
-		// behaviour; ioquake3 only reaches this through GLS_SRCBLEND_ALPHA_SATURATE,
-		// which stock shaders do not use.
+		// No saturate on the GE; source alpha is closest, and stock shaders never use it.
 		case GL_SRC_ALPHA_SATURATE:	return GU_SRC_ALPHA;
 
 		default:
@@ -129,15 +62,8 @@ static int PSP_BlendFactor( GLenum factor, unsigned int *fix )
 	}
 }
 
-/*
- sceGumLoadMatrix takes a 16-byte-aligned matrix: the VFPU build of libpspgum
- loads it with lv.q, which raises an exception on a misaligned address rather
- than reading slowly. ioquake3's matrices are bare float[16] fields inside
- structs (backEnd.viewParms.projectionMatrix, backEnd.orientation.modelMatrix)
- with no alignment attribute, so they cannot be cast in place - the mirror
- does exactly that (tr_backend.cpp:517) and is relying on luck in the struct
- layout. Stage through an aligned copy instead; it is 64 bytes.
-*/
+// sceGumLoadMatrix uses lv.q, which faults on a misaligned address; ioq3's float[16] fields have
+// no alignment, so stage them through this aligned copy.
 static ScePspFMatrix4 __attribute__((aligned(16))) pspMatrixStage;
 
 static void PSP_LoadMatrix( const GLfloat *m )
@@ -147,23 +73,11 @@ static void PSP_LoadMatrix( const GLfloat *m )
 	sceGumUpdateMatrix();
 }
 
-/*
- Which gum stack GL_MATRIX_MODE currently points at.
-
- psp_draw.c reads this so PSP_UpdateClipPlanes can borrow both stacks with
- sceGumStoreMatrix and put the mode back exactly as it found it. Tracking it
- here is free - gu_MatrixMode is the only thing that changes it - and asking
- libpspgum for it is not possible.
-*/
+// Current GL_MATRIX_MODE stack; PSP_UpdateClipPlanes reads it to restore the mode (libpspgum can't).
 int	pspMatrixModeCurrent = GU_MODEL;
 
-/*
- The renderer changes the same fixed-function state for nearly every shader
- stage. sceGu* calls append command words even when the value is unchanged,
- so keep the last values in the qgl shim and emit only real transitions.
- This cache is display-list state, not engine state: reset it whenever the GU
- is reinitialised, and leave the first command for every cached value intact.
-*/
+// sceGu* emits commands even for unchanged values, so only real transitions go out. Display-list
+// state: reset whenever the GU is reinitialised.
 typedef struct {
 	unsigned int	knownCaps;
 	unsigned int	enabledCaps;
@@ -212,21 +126,9 @@ static unsigned int PSP_GLCapBit( GLenum cap )
 	}
 }
 
-/*
-=================================================================
-QGL_1_1_PROCS
-=================================================================
-*/
+// QGL_1_1_PROCS
 
-/*
-=================================================================
-Textures. Bodies in code/psp/psp_tex.c.
-
-Every one of these is a straight forward: the GL-vs-GE reasoning
-(formats, swizzling, tbw padding, the mip-chain cap, cache writeback)
-lives in psp_tex.c so it is stated once, next to the code it constrains.
-=================================================================
-*/
+// Textures: bodies and the GL-vs-GE reasoning live in psp_tex.c.
 
 static void APIENTRY gu_GenTextures( GLsizei n, GLuint *textures )
 {
@@ -249,15 +151,17 @@ static void APIENTRY gu_BindTexture( GLenum target, GLuint texture )
 	PSP_TexBind( texture );
 }
 
-/*
- format and type are GL_RGBA / GL_UNSIGNED_BYTE at all four call sites
- (tr_image.c:746,778,800 and tr_backend.c:794) - upstream never uploads
- anything else - and border is always 0. internalFormat is the only
- argument that varies, and it is upstream's own "does this image use
- alpha" verdict; psp_tex.c reads it as such.
-*/
+// Upstream only uploads GL_RGBA bytes; internalFormat is its "uses alpha" verdict.
+// TA cinematics (RE_UploadCinematic) are the one exception: GE-order 5650 frames.
 static void APIENTRY gu_TexImage2D( GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const GLvoid *pixels )
 {
+#ifdef MISSIONPACK
+	if( format == GL_RGB && type == GL_UNSIGNED_SHORT_5_6_5 )
+	{
+		PSP_TexUpload2D5650( width, height, pixels );
+		return;
+	}
+#endif
 	if( format != GL_RGBA || type != GL_UNSIGNED_BYTE )
 	{
 		ri.Printf( PRINT_WARNING, "qglTexImage2D: unsupported format 0x%04X type 0x%04X\n",
@@ -270,6 +174,13 @@ static void APIENTRY gu_TexImage2D( GLenum target, GLint level, GLint internalFo
 
 static void APIENTRY gu_TexSubImage2D( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels )
 {
+#ifdef MISSIONPACK
+	if( format == GL_RGB && type == GL_UNSIGNED_SHORT_5_6_5 )
+	{
+		PSP_TexSubImage2D5650( level, xoffset, yoffset, width, height, pixels );
+		return;
+	}
+#endif
 	if( format != GL_RGBA || type != GL_UNSIGNED_BYTE )
 		return;
 
@@ -286,19 +197,10 @@ static void APIENTRY gu_TexParameteri( GLenum target, GLenum pname, GLint param 
 	PSP_TexParameter( pname, param );
 }
 
-/*
- Framebuffer readback into a texture. The only caller is R_MipMap-free
- mirror/portal capture, which this port does not reach yet; sceGuCopyImage
- could implement it, but writing it before something calls it would be
- untestable code. Session 7 owns portals.
-*/
+// Framebuffer-to-texture copy (mirror/portal capture), not reached by this port.
 static void APIENTRY stub_CopyTexSubImage2D( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height ) { }
 
-/*
-=================================================================
-Geometry. Bodies in code/psp/psp_draw.c.
-=================================================================
-*/
+// Geometry: bodies in psp_draw.c.
 
 // No caller in renderergl1 - every draw goes through qglDrawElements.
 static void APIENTRY stub_DrawArrays( GLenum mode, GLint first, GLsizei count ) { }
@@ -319,11 +221,7 @@ static void APIENTRY stub_LineWidth( GLfloat width ) { }
 static void APIENTRY stub_PolygonOffset( GLfloat factor, GLfloat units ) { }
 static void APIENTRY stub_ReadPixels( GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLvoid *pixels ) { }
 
-/*
- The display list stays open from GLimp_Init to GLimp_Shutdown, so these
- must not sync: sceGuSync would close a list that GLimp_EndFrame is the
- only function allowed to close. r_finish has no meaning here.
-*/
+// The list stays open from GLimp_Init to GLimp_Shutdown; syncing here would close it early.
 static void APIENTRY stub_Finish( void ) { }
 static void APIENTRY stub_Flush( void ) { }
 
@@ -378,11 +276,7 @@ static void APIENTRY gu_Clear( GLbitfield mask )
 		sceGuClear( bits );
 }
 
-/*
- 0xAABBGGRR, and a 1-bit PREVENTS a write - the inverse of GL's "true means
- writable". The channel masks are 8-bit even though the target is 5650;
- pspgu.h's own note says the unused low bits must be masked too.
-*/
+// 0xAABBGGRR, and a set bit BLOCKS the write (inverse of GL). Mask all 8 bits even on 5650.
 static void APIENTRY gu_ColorMask( GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha )
 {
 	unsigned int	mask = 0;
@@ -404,13 +298,8 @@ static void APIENTRY gu_ColorMask( GLboolean red, GLboolean green, GLboolean blu
 	sceGuPixelMask( mask );
 }
 
-/*
- The GE cannot choose which face to cull; it culls back faces and lets you
- say which winding is front. Culling GL_FRONT is therefore expressed by
- declaring the opposite winding to be the front one.
-
- GLimp_Init leaves GU_CCW as the resting state, matching GL's default.
-*/
+// The GE only culls back faces; culling GL_FRONT means declaring the opposite winding as front.
+// GU_CCW is the resting state, as in GL.
 static void APIENTRY gu_CullFace( GLenum mode )
 {
 	if( !pspGuReady )
@@ -549,16 +438,8 @@ static const GLubyte * APIENTRY gu_GetString( GLenum name )
 	}
 }
 
-/*
- GL's scissor origin is the bottom-left of the framebuffer; the GE's is the
- top-left of the panel. Only the Y needs converting - sceGuScissor really
- does take (x, y, width, height), verified by disassembling libpspgu, so
- unlike the viewport there is no coordinate-space change on top of the flip.
-
- The mirror omits this flip (tr_backend.cpp:528) and is correct only because
- Quake 3's main scissor covers the whole screen; portal and mirror views set
- a sub-rectangle and would land upside down.
-*/
+// GL's scissor origin is bottom-left, the GE's top-left: flip Y only. The mirror skips the flip,
+// which breaks portal sub-rectangles.
 static void APIENTRY gu_Scissor( GLint x, GLint y, GLsizei width, GLsizei height )
 {
 	if( !pspGuReady )
@@ -567,25 +448,8 @@ static void APIENTRY gu_Scissor( GLint x, GLint y, GLsizei width, GLsizei height
 	sceGuScissor( x, glConfig.vidHeight - ( y + height ), width, height );
 }
 
-/*
- sceGuViewport takes the CENTRE of the viewport in the GE's 4096x4096
- virtual space, not a corner in screen space. GLimp_Init put the panel's
- top-left at (2048 - w/2, 2048 - h/2) with sceGuOffset, so a viewport whose
- top edge is at screen row (vidHeight - (y + height)) has its centre at:
-
-     cx = (2048 - vidWidth/2)  + x + width/2
-     cy = (2048 - vidHeight/2) + (vidHeight - (y + height)) + height/2
-
- which reduces to the expressions below. Full-screen this gives
- (2048, 2048), matching the canonical init.
-
- No extra vertical flip is needed for the geometry itself: the GE's viewport
- transform already negates Y, which is why an unmodified GL projection
- matrix comes out the right way up.
-
- The mirror uses cx = 2048 - viewportX (tr_backend.cpp:526-527), which
- agrees with this only when the viewport is the whole screen.
-*/
+// sceGuViewport takes the viewport CENTRE in the 4096x4096 space (panel at 2048 - w/2, 2048 - h/2),
+// Y flipped from GL. The GE viewport already negates Y, so geometry needs no extra flip.
 static void APIENTRY gu_Viewport( GLint x, GLint y, GLsizei width, GLsizei height )
 {
 	if( !pspGuReady )
@@ -596,11 +460,7 @@ static void APIENTRY gu_Viewport( GLint x, GLint y, GLsizei width, GLsizei heigh
 	               width, height );
 }
 
-/*
-=================================================================
-QGL_1_1_FIXED_FUNCTION_PROCS
-=================================================================
-*/
+// QGL_1_1_FIXED_FUNCTION_PROCS
 
 static void APIENTRY gu_Color4f( GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha )
 {
@@ -661,15 +521,8 @@ static void APIENTRY gu_LoadIdentity( void )
 		PSP_DrawMatrixDirty();
 }
 
-/*
- The one call that tells the clipper it is looking at a 3D frame.
-
- RB_SetGL2D does MatrixMode(PROJECTION) -> LoadIdentity -> Ortho, so the
- ortho flag goes up in gu_Ortho below. RB_BeginDrawingView does
- MatrixMode(PROJECTION) -> LoadMatrixf(viewParms.projectionMatrix), which is
- the only way back out of 2D. Anything loaded into GL_MODELVIEW just dirties
- the cached planes.
-*/
+// LoadMatrixf into PROJECTION is RB_BeginDrawingView leaving 2D (gu_Ortho enters it);
+// a GL_MODELVIEW load only dirties the cached clip planes.
 static void APIENTRY gu_LoadMatrixf( const GLfloat *m )
 {
 	if( !pspGuReady || !m )
@@ -682,32 +535,12 @@ static void APIENTRY gu_LoadMatrixf( const GLfloat *m )
 	else if( pspMatrixModeCurrent != GU_TEXTURE )
 		PSP_DrawMatrixDirty();
 
-	/*
-	 GU_TEXTURE is excluded deliberately, and it is not a micro-optimisation.
-	 The clip planes are extracted from projection x model only
-	 (PSP_UpdateClipPlanes), so a texture matrix cannot invalidate them - but
-	 psp_tcmod.c loads one PER STAGE, so treating it as a dirtying event would
-	 charge every stage of every surface two sceGumStoreMatrix calls, a 4x4
-	 multiply and four sqrtf. That is more than the per-vertex work the texture
-	 matrix exists to remove, i.e. the change would pay for itself in the wrong
-	 direction and look like the GE path simply not helping.
-
-	 If drawOutcode or drawClip ever moves in a run where only tcMod code
-	 changed, this branch is the first thing to check.
-	*/
+	// GU_TEXTURE must not dirty the clip planes: psp_tcmod.c loads one per stage, and a recompute
+	// each time costs more than the texture matrix saves.
 }
 
-/*
- GL has one modelview matrix; the GE has separate model and view stacks.
- GLimp_Init pinned GU_VIEW to identity for the life of the process, so
- GL_MODELVIEW lands entirely on GU_MODEL.
-
- GL_TEXTURE is spelled out (Session 12b) because the old two-way expression
- folded it into GU_MODEL: psp_tcmod.c's first qglLoadMatrixf would have
- overwritten the view transform with a texture matrix, which is a black or
- scrambled frame rather than a subtle bug. Anything else still falls to
- GU_MODEL - GL_MODELVIEW is the only other mode this engine sets.
-*/
+// GL has one modelview; GLimp_Init pins GU_VIEW to identity, so it goes to GU_MODEL. GL_TEXTURE is
+// explicit, or tcMod matrices would overwrite the model transform.
 static void APIENTRY gu_MatrixMode( GLenum mode )
 {
 	int nextMode;
@@ -764,11 +597,7 @@ static void APIENTRY gu_ShadeModel( GLenum mode )
 	sceGuShadeModel( ( mode == GL_FLAT ) ? GU_FLAT : GU_SMOOTH );
 }
 
-/*
- Only ever called as qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, mode)
- from GL_TexEnv (tr_backend.c). GU_TCC_RGBA keeps the texture's alpha in
- play, which the alpha test above depends on.
-*/
+// Only GL_TexEnv calls this. GU_TCC_RGBA keeps texture alpha for the alpha test.
 static void APIENTRY gu_TexEnvf( GLenum target, GLenum pname, GLfloat param )
 {
 	if( !pspGuReady || pname != GL_TEXTURE_ENV_MODE )
@@ -818,11 +647,7 @@ static void APIENTRY gu_Translatef( GLfloat x, GLfloat y, GLfloat z )
 	PSP_DrawMatrixDirty();
 }
 
-/*
-=================================================================
-QGL_DESKTOP_1_1_PROCS
-=================================================================
-*/
+// QGL_DESKTOP_1_1_PROCS
 
 // Double buffered through sceGuSwapBuffers only; there is no front-buffer
 // rendering to select. tr_cmds.c's r_showimages path is the only caller.
@@ -840,12 +665,7 @@ static void APIENTRY gu_ClearDepth( GLclampd depth )
 	sceGuClearDepth( (unsigned int)( depth * 65535.0 ) );
 }
 
-/*
- Not inverted. GLimp_Init established sceGuDepthRange(0, 65535) with
- GU_LEQUAL, so this is a straight scale of GL's [0,1] range and
- qglDepthRange(0, 0) - ioquake3's "never occluded" for flares and debug
- normals - keeps meaning the near plane.
-*/
+// Straight scale onto GLimp_Init's 0..65535 LEQUAL range, so DepthRange(0, 0) stays the near plane.
 static void APIENTRY gu_DepthRange( GLclampd near_val, GLclampd far_val )
 {
 	int nearValue, farValue;
@@ -867,18 +687,8 @@ static void APIENTRY gu_DepthRange( GLclampd near_val, GLclampd far_val )
 	sceGuDepthRange( nearValue, farValue );
 }
 
-/*
-=================================================================
-QGL_DESKTOP_1_1_FIXED_FUNCTION_PROCS
-
-Immediate mode. Bodies in code/psp/psp_draw.c, which accumulates into the
-same 24-byte vertex layout the array path uses and issues one
-sceGuDrawArray at qglEnd.
-
-This is not a debug-only path: DrawSkySide (renderergl1/tr_sky.c:376-393)
-draws the entire skybox through it.
-=================================================================
-*/
+// Immediate mode (bodies in psp_draw.c, one sceGuDrawArray at qglEnd); DrawSkySide draws the
+// whole skybox with it.
 static void APIENTRY gu_ArrayElement( GLint i )
 {
 	PSP_DrawArrayElement( i );
@@ -894,21 +704,11 @@ static void APIENTRY gu_End( void )
 	PSP_DrawEnd();
 }
 
-/*
- The portal/mirror clip plane. The GE has no user clip plane of any kind and
- nothing here can synthesise one cheaply - the plane arrives in eye space
- while psp_draw.c's clipper works in model space. Left as a no-op: mirrors
- render the world behind them instead of a reflection, which is what
- Quake3PSP-mirror ships too.
-*/
+// No user clip plane on the GE, and the eye-space plane can't be synthesised cheaply: mirrors show
+// the world behind them, as in Quake3PSP-mirror.
 static void APIENTRY stub_ClipPlane( GLenum plane, const GLdouble *equation ) { }
 
-/*
- These two are grouped with immediate mode by qgl.h, but they set the same
- current colour the vertex-array path reads when GL_COLOR_ARRAY is off -
- which is how the sky (tr_sky.c:800) and the untextured debug paths get
- their colour. So they are real even though qglBegin/qglVertex are not.
-*/
+// These set the current colour the array path uses without GL_COLOR_ARRAY (sky, debug paths).
 static void APIENTRY gu_Color3f( GLfloat red, GLfloat green, GLfloat blue )
 {
 	PSP_DrawSetColor4f( red, green, blue, 1.0f );
@@ -934,9 +734,7 @@ static void APIENTRY gu_TexCoord2fv( const GLfloat *v )
 		PSP_DrawImmTexCoord2f( v[ 0 ], v[ 1 ] );
 }
 
-// The 2D callers (RE_StretchRaw, RB_ShowImages) draw through the same 3D
-// T&L pipe as everything else in this port, so z is a real coordinate and
-// 0 is what GL's glVertex2f means by it.
+// RE_StretchRaw and RB_ShowImages draw through the 3D pipe, so z = 0 as GL's glVertex2f means.
 static void APIENTRY gu_Vertex2f( GLfloat x, GLfloat y )
 {
 	PSP_DrawImmVertex3f( x, y, 0.0f );
@@ -953,12 +751,7 @@ static void APIENTRY gu_Vertex3fv( const GLfloat *v )
 		PSP_DrawImmVertex3f( v[ 0 ], v[ 1 ], v[ 2 ] );
 }
 
-/*
- RB_SetGL2D's projection. sceGumOrtho multiplies the current matrix, and
- ioquake3 always issues qglLoadIdentity first, so this matches GL exactly -
- including the flipped top/bottom (0, w, h, 0) that puts 2D origin at the
- top-left.
-*/
+// RB_SetGL2D always loads identity first, so sceGumOrtho's multiply matches GL (top-left origin).
 static void APIENTRY gu_Ortho( GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble near_val, GLdouble far_val )
 {
 	if( !pspGuReady )
@@ -988,22 +781,13 @@ static void APIENTRY gu_Ortho( GLdouble left, GLdouble right, GLdouble bottom, G
 #endif
 }
 
-/*
-=================================================================
-QGL_3_0_PROCS
-=================================================================
-*/
+// QGL_3_0_PROCS
 static const GLubyte * APIENTRY stub_GetStringi( GLenum name, GLuint index )
 {
 	return (const GLubyte *)"";
 }
 
-/*
-=================================================================
-The vtable tr_local.h externs, via the QGL_*_PROCS lists in
-code/renderercommon/qgl.h.
-=================================================================
-*/
+// The vtable tr_local.h externs, via qgl.h's QGL_*_PROCS lists.
 
 BindTextureproc               *qglBindTexture               = gu_BindTexture;
 BlendFuncproc                 *qglBlendFunc                 = gu_BlendFunc;
@@ -1077,12 +861,7 @@ Vertex3fvproc                 *qglVertex3fv                 = gu_Vertex3fv;
 
 GetStringiproc                *qglGetStringi                = stub_GetStringi;
 
-/*
- Declared directly in qgl.h rather than through a GLE list. They stay NULL:
- the GE has one texture unit, so tr_init.c takes its no-multitexture path
- and never dereferences these, and there is no compiled-vertex-array
- extension to emulate.
-*/
+// NULL: one texture unit makes tr_init.c take the no-multitexture path; no CVA to emulate.
 void (APIENTRYP qglActiveTextureARB) (GLenum texture) = NULL;
 void (APIENTRYP qglClientActiveTextureARB) (GLenum texture) = NULL;
 void (APIENTRYP qglMultiTexCoord2fARB) (GLenum target, GLfloat s, GLfloat t) = NULL;

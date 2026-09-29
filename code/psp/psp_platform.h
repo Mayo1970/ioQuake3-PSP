@@ -33,8 +33,20 @@
 #define MASTER_SERVER_NAME        "master.ioquake3.org"
 #endif
 
-// s_knownSfx rows, 100 bytes each; the sound pool can never hold 4096 sounds resident.
+// Team Arena runs from the q3 install folder, so its logs get their own names (Xbox: ioquake3_ta.log).
+#ifdef MISSIONPACK
+#define PSP_LOG_TAG               "_ta"
+#else
+#define PSP_LOG_TAG               ""
+#endif
+
+// s_knownSfx rows, 108 bytes each; the sound pool can never hold 4096 sounds resident.
+// Team Arena also names its 796 voice chat sounds, which load on first play (snd_dma.c).
+#ifdef MISSIONPACK
+#define MAX_SFX                   1536
+#else
 #define MAX_SFX                   512
+#endif
 
 // Paid twice (hunk and R_RadixSort .bss). Q3DM1 has ~2100 surfaces; the sort clamps, it does not overrun.
 #define MAX_DRAWSURFS             0x2000
