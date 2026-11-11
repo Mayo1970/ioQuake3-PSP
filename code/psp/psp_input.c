@@ -49,6 +49,7 @@ In game, per the port owner:
   R            attack                            K_JOY6  -> +attack
   Start        pause                             K_JOY7  -> pause
   Select       scoreboard                        K_JOY8  -> +scores
+  L + R        toggle aim assist (cl_aimAssist)
 
 In menus and the console, Crow_bar's layout (mirror psp_input.c:333-340):
 
@@ -167,6 +168,7 @@ static cvar_t			*in_pspLookSpeed;
 
 static float			pspCursorAccumX;
 static float			pspCursorAccumY;
+static float			pspLookDeflection;
 static qboolean			pspInMenuPrev;
 static qboolean			pspInputReady = qfalse;
 
@@ -285,6 +287,11 @@ static int PSP_NubAxis( int raw )
 	return sign * ( value * PSP_AXIS_FULL ) / range;
 }
 
+float PSP_Input_LookDeflection( void )
+{
+	return pspLookDeflection;
+}
+
 /*
 ===============
 IN_Init
@@ -309,6 +316,7 @@ void IN_Init( void *windowData )
 	pspCursorAccumX = 0.0f;
 	pspCursorAccumY = 0.0f;
 	pspInMenuPrev   = qfalse;
+	pspLookDeflection = 0.0f;
 
 	in_pspDeadzone  = Cvar_Get( "in_pspDeadzone",  "26",   CVAR_ARCHIVE );
 	in_pspMenuSpeed = Cvar_Get( "in_pspMenuSpeed", "5",    CVAR_ARCHIVE );
@@ -424,6 +432,40 @@ void IN_Frame( void )
 			pspHeldKey[ PSP_BTN_SELECT ] = 0;
 		}
 
+		/* L+R: toggle cl_aimAssist, restoring the last non-zero mode. */
+		if( ( pad.Buttons & PSP_CTRL_LTRIGGER ) && ( pad.Buttons & PSP_CTRL_RTRIGGER ) &&
+			( pspChordHeldMask & ( ( 1u << PSP_BTN_L ) | ( 1u << PSP_BTN_R ) ) ) !=
+			( ( 1u << PSP_BTN_L ) | ( 1u << PSP_BTN_R ) ) )
+		{
+			static int	aimLastMode = 1;
+			int		mode = Cvar_VariableIntegerValue( "cl_aimAssist" );
+
+			if( mode > 0 )
+			{
+				aimLastMode = mode;
+				Cvar_Set( "cl_aimAssist", "0" );
+				Com_Printf( "DISABLED AIM ASSIST\n" );
+			}
+			else
+			{
+				Cvar_Set( "cl_aimAssist", va( "%d", aimLastMode ) );
+				Com_Printf( "ENABLED AIM ASSIST\n" );
+			}
+
+			/* Release whichever shoulder already fired (jump/attack); the mask swallows both until let go. */
+			if( pspHeldKey[ PSP_BTN_L ] )
+			{
+				Com_QueueEvent( 0, SE_KEY, pspHeldKey[ PSP_BTN_L ], qfalse, 0, NULL );
+				pspHeldKey[ PSP_BTN_L ] = 0;
+			}
+			if( pspHeldKey[ PSP_BTN_R ] )
+			{
+				Com_QueueEvent( 0, SE_KEY, pspHeldKey[ PSP_BTN_R ], qfalse, 0, NULL );
+				pspHeldKey[ PSP_BTN_R ] = 0;
+			}
+			pspChordHeldMask |= ( 1u << PSP_BTN_L ) | ( 1u << PSP_BTN_R );
+		}
+
 	for( i = 0; i < PSP_NUM_BUTTONS; i++ )
 	{
 		qboolean	down = ( pad.Buttons & pspButtonMask[ i ] ) ? qtrue : qfalse;
@@ -495,6 +537,8 @@ void IN_Frame( void )
 			*/
 			float	speed = in_pspMenuSpeed->value;
 
+			pspLookDeflection = 0.0f;
+
 			if( x || y )
 			{
 				int	dx, dy;
@@ -520,6 +564,10 @@ void IN_Frame( void )
 				cl.cgameSensitivity;
 			float	pitchGain = cl_sensitivity->value * m_pitch->value *
 				cl.cgameSensitivity;
+			int		ax = ( x < 0 ) ? -x : x;
+			int		ay = ( y < 0 ) ? -y : y;
+
+			pspLookDeflection = (float)( ( ax > ay ) ? ax : ay ) / (float)PSP_AXIS_FULL;
 
 			if( x || y )
 			{
@@ -558,6 +606,7 @@ void IN_Shutdown( void )
 	PSP_ReleaseAll();
 	PSP_ZeroAxes();
 
+	pspLookDeflection = 0.0f;
 	pspInputReady = qfalse;
 }
 
